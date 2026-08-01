@@ -13,8 +13,9 @@
 package com.netflix.maestro.validations;
 
 import com.netflix.maestro.MaestroBaseTest;
-import javax.validation.Validation;
-import javax.validation.Validator;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import org.apache.bval.jsr.ApacheValidationProvider;
 import org.junit.Before;
 
 public abstract class BaseConstraintTest extends MaestroBaseTest {
@@ -22,6 +23,10 @@ public abstract class BaseConstraintTest extends MaestroBaseTest {
 
   @Before
   public void setup() {
-    this.validator = Validation.buildDefaultValidatorFactory().getValidator();
+    this.validator =
+        Validation.byProvider(ApacheValidationProvider.class)
+            .configure()
+            .buildValidatorFactory()
+            .getValidator();
   }
 }

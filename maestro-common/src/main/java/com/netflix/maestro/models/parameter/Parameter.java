@@ -35,8 +35,7 @@ import java.util.Map;
   @JsonSubTypes.Type(name = "LONG_ARRAY", value = LongArrayParameter.class),
   @JsonSubTypes.Type(name = "DOUBLE_ARRAY", value = DoubleArrayParameter.class),
   @JsonSubTypes.Type(name = "BOOLEAN_ARRAY", value = BooleanArrayParameter.class),
-  @JsonSubTypes.Type(name = "MAP", value = MapParameter.class),
-  @JsonSubTypes.Type(name = "SIGNAL", value = SignalParameter.class),
+  @JsonSubTypes.Type(name = "MAP", value = MapParameter.class)
 })
 public interface Parameter {
 
@@ -99,6 +98,12 @@ public interface Parameter {
   @JsonIgnore
   default boolean isEvaluated() {
     return getEvaluatedTime() != null;
+  }
+
+  /** Get the literal value derived from a parameter's value field. */
+  @JsonIgnore
+  default Object getLiteralValue() {
+    return getValue();
   }
 
   /** preprocessing the parameters in instances by validating result and setting name. */

@@ -15,7 +15,7 @@ package com.netflix.maestro.models.instance;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.utils.Checks;
@@ -37,19 +37,20 @@ import lombok.Getter;
  * run2 had 4 steps succeeded after restarting instance from incomplete, aggregated rollup for run2
  * will contain 7 succeeded steps.
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"total_leaf_count", "overview"},
     alphabetic = true)
 @Data
+@SuppressWarnings("PMD.LooseCoupling")
 public class WorkflowRollupOverview {
   private long totalLeafCount;
 
   private EnumMap<StepInstance.Status, CountReference> overview;
 
   /** class to include a count and the references. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonPropertyOrder(
       value = {"cnt", "ref"},

@@ -16,9 +16,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
 import com.netflix.maestro.models.Constants;
+import jakarta.validation.ConstraintViolation;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import javax.validation.ConstraintViolation;
 import org.junit.Test;
 
 public class MaestroNameConstraintTest extends BaseConstraintTest {
@@ -86,12 +86,14 @@ public class MaestroNameConstraintTest extends BaseConstraintTest {
             new TestName(new String(new char[Constants.NAME_LENGTH_LIMIT + 1]).replace("\0", "a")));
     assertEquals(1, violations.size());
     ConstraintViolation<TestName> violation = violations.iterator().next();
-    assertEquals(257, ((String) violation.getInvalidValue()).length());
+    assertEquals(Constants.NAME_LENGTH_LIMIT + 1, ((String) violation.getInvalidValue()).length());
     assertEquals(
         String.format(
-            "[maestro name] cannot be more than name length limit 256 "
+            "[maestro name] cannot be more than name length limit %s "
                 + "- rejected length is [%s] for value [%s]",
-            257, new String(new char[Constants.NAME_LENGTH_LIMIT + 1]).replace("\0", "a")),
+            Constants.NAME_LENGTH_LIMIT,
+            Constants.NAME_LENGTH_LIMIT + 1,
+            new String(new char[Constants.NAME_LENGTH_LIMIT + 1]).replace("\0", "a")),
         violation.getMessage());
   }
 

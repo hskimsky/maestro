@@ -17,11 +17,10 @@ import com.netflix.maestro.engine.eval.MaestroParamExtensionRepo;
 import com.netflix.maestro.engine.eval.ParamEvaluator;
 import com.netflix.maestro.engine.execution.RunRequest;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
-import com.netflix.maestro.engine.jobevents.StartWorkflowJobEvent;
 import com.netflix.maestro.engine.params.ParamsManager;
-import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
 import com.netflix.maestro.engine.transformation.DagTranslator;
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.models.definition.Step;
 import com.netflix.maestro.models.definition.TagList;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.models.error.Details;
@@ -33,6 +32,8 @@ import com.netflix.maestro.models.timeline.TimelineDetailsEvent;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.utils.DurationParser;
 import com.netflix.maestro.utils.IdHelper;
+import com.netflix.maestro.utils.MapHelper;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.Collections;
 import java.util.Map;
 import lombok.AllArgsConstructor;
@@ -44,17 +45,7 @@ public class WorkflowHelper {
   private final ParamEvaluator paramEvaluator;
   private final DagTranslator dagTranslator;
   private final MaestroParamExtensionRepo paramExtensionRepo;
-  private final MaestroJobEventPublisher publisher;
-
-  /**
-   * Returns workflow id if workflow name is missing and was not provided by the user.
-   *
-   * @param workflow workflow definition
-   * @return workflow name
-   */
-  public static String getWorkflowNameOrDefault(Workflow workflow) {
-    return workflow.getName() != null ? workflow.getName() : workflow.getId();
-  }
+  private final long maxGroupNum;
 
   /**
    * Create a workflow instance based on the workflow info, e.g. definition, run request, etc.
@@ -81,6 +72,8 @@ public class WorkflowHelper {
     // set correlation id if request contains it, otherwise, update it later inside DAO
     instance.setCorrelationId(runRequest.getCorrelationId());
     instance.setRunProperties(runProperties);
+    // set the current max group num for the fresh new workflow instance
+    instance.setGroupInfo(ObjectHelper.valueOrDefault(runRequest.getGroupInfo(), maxGroupNum));
     // it includes runtime params and tags. Its dag is versioned dag.
     Workflow workflow = overrideWorkflowConfig(workflowDef, runRequest);
     instance.setRuntimeWorkflow(workflow);
@@ -162,11 +155,12 @@ public class WorkflowHelper {
     summary.setWorkflowId(instance.getWorkflowId());
     summary.setInternalId(instance.getInternalId());
     summary.setWorkflowVersionId(instance.getWorkflowVersionId());
-    summary.setWorkflowName(getWorkflowNameOrDefault(instance.getRuntimeWorkflow()));
+    summary.setWorkflowName(instance.getRuntimeWorkflow().getWorkflowNameOrDefault());
     summary.setWorkflowInstanceId(instance.getWorkflowInstanceId());
     summary.setCreationTime(instance.getCreateTime());
     summary.setWorkflowRunId(instance.getWorkflowRunId());
     summary.setCorrelationId(instance.getCorrelationId());
+    summary.setGroupInfo(instance.getGroupInfo());
     summary.setWorkflowUuid(instance.getWorkflowUuid());
     if (instance.getRunConfig() != null) {
       summary.setRunPolicy(instance.getRunConfig().getPolicy());
@@ -178,6 +172,9 @@ public class WorkflowHelper {
     summary.setStepRunParams(instance.getStepRunParams());
     summary.setTags(instance.getRuntimeWorkflow().getTags());
     summary.setRuntimeDag(instance.getRuntimeDag());
+    summary.setStepMap(
+        instance.getRuntimeWorkflow().getSteps().stream()
+            .collect(MapHelper.toListMap(Step::getId, s -> s)));
     summary.setCriticality(instance.getRuntimeWorkflow().getCriticality());
     summary.setInstanceStepConcurrency(instance.getRuntimeWorkflow().getInstanceStepConcurrency());
     return summary;
@@ -206,8 +203,7 @@ public class WorkflowHelper {
     // evaluate workflow params
     Map<String, Parameter> allParams =
         paramsManager.generateMergedWorkflowParams(instance, request);
-    paramExtensionRepo.reset(
-        Collections.emptyMap(), Collections.emptyMap(), InstanceWrapper.from(instance, request));
+    paramExtensionRepo.reset(Collections.emptyMap(), null, InstanceWrapper.from(instance, request));
     // evaluate wf params during start and restart
     paramEvaluator.evaluateWorkflowParameters(allParams, instance.getWorkflowId());
     paramExtensionRepo.clear();
@@ -222,25 +218,12 @@ public class WorkflowHelper {
     }
     if (workflow.getTimeout() != null) { // set parsed timeout
       long timeout =
-          DurationParser.getDurationWithParamInMillis(
+          DurationParser.getTimeoutWithParamInMillis(
               workflow.getTimeout(),
               p -> paramEvaluator.parseAttribute(p, allParams, workflow.getId(), false));
       instance.setTimeoutInMillis(timeout);
     }
 
     instance.setParams(allParams);
-  }
-
-  /**
-   * Helper method to publish a start workflow event for a given workflow if flag is true and
-   * workflow id is valid and is not a foreach inline workflow.
-   */
-  public void publishStartWorkflowEvent(String workflowId, boolean flag) {
-    if (flag
-        && workflowId != null
-        && !workflowId.isEmpty()
-        && !IdHelper.isInlineWorkflowId(workflowId)) {
-      publisher.publishOrThrow(StartWorkflowJobEvent.create(workflowId));
-    }
   }
 }

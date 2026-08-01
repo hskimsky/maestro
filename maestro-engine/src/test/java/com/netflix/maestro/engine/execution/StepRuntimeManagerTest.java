@@ -15,12 +15,12 @@ package com.netflix.maestro.engine.execution;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
 import com.netflix.maestro.engine.MaestroEngineBaseTest;
+import com.netflix.maestro.engine.db.StepAction;
 import com.netflix.maestro.engine.params.DefaultParamManager;
 import com.netflix.maestro.engine.params.ParamsManager;
 import com.netflix.maestro.engine.steps.StepRuntime;
@@ -40,6 +40,7 @@ import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.models.parameter.StringMapParamDefinition;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -47,7 +48,6 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 
 public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
 
@@ -68,9 +68,14 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
     workflowSummary = new WorkflowSummary();
     workflowSummary.setWorkflowId("abc");
     workflowSummary.setWorkflowInstanceId(123);
+    count.set(0);
     runtimeSummary =
-        StepRuntimeSummary.builder().stepId("step1").stepInstanceUuid("uuid123").build();
-    defaultParamManager = Mockito.mock(DefaultParamManager.class);
+        StepRuntimeSummary.builder()
+            .stepId("step1")
+            .type(StepType.NOOP)
+            .stepRetry(StepInstance.StepRetry.from(Defaults.DEFAULT_RETRY_POLICY))
+            .stepInstanceUuid("uuid123")
+            .build();
     ParamsManager paramsManager = new ParamsManager(defaultParamManager);
     Map<StepType, StepRuntime> stepRuntimeMap =
         Collections.singletonMap(
@@ -83,7 +88,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
                 runtimeSummary.addTimeline(TimelineLogEvent.info("hello world"));
                 if (count.get() < 1) {
                   return new Result(
-                      State.DONE, Collections.singletonMap("test-artifact", artifact), null);
+                      State.DONE, Collections.singletonMap("test-artifact", artifact), null, 5000L);
                 } else {
                   return Result.of(State.USER_ERROR);
                 }
@@ -95,7 +100,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
                 runtimeSummary.addTimeline(TimelineLogEvent.info("hello world"));
                 if (count.get() < 1) {
                   return new Result(
-                      State.DONE, Collections.singletonMap("test-artifact", artifact), null);
+                      State.DONE, Collections.singletonMap("test-artifact", artifact), null, 3000L);
                 } else {
                   return Result.of(State.PLATFORM_ERROR);
                 }
@@ -113,7 +118,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
               @Override
               public Map<String, ParamDefinition> injectRuntimeParams(
                   WorkflowSummary workflowSummary, Step step) {
-                return threeItemMap(
+                return Map.of(
                     "test-param",
                     ParamDefinition.buildParamDefinition("test-param", "from-inject"),
                     "injected-param",
@@ -124,7 +129,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
               }
 
               @Override
-              public List<Tag> injectRuntimeTags() {
+              public List<Tag> injectRuntimeTags(WorkflowSummary workflowSummary, Step step) {
                 return Collections.singletonList(Tag.create("test"));
               }
             });
@@ -134,22 +139,26 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
 
   @Test
   public void testStart() {
-    StepRuntimeSummary summary =
-        StepRuntimeSummary.builder()
-            .type(StepType.NOOP)
-            .stepRetry(StepInstance.StepRetry.from(Defaults.DEFAULT_RETRY_POLICY))
-            .build();
-    boolean ret = runtimeManager.start(workflowSummary, null, summary);
+    runtimeSummary.setPendingAction(StepAction.builder().build());
+    assertNotNull(runtimeSummary.getPendingAction());
+    boolean ret = runtimeManager.start(workflowSummary, null, runtimeSummary);
     assertTrue(ret);
-    assertEquals(StepInstance.Status.RUNNING, summary.getRuntimeState().getStatus());
-    assertNotNull(summary.getRuntimeState().getExecuteTime());
-    assertNotNull(summary.getRuntimeState().getModifyTime());
-    assertEquals(1, summary.getPendingRecords().size());
+    // Test start() method with polling interval
+    assertEquals(Long.valueOf(5000L), runtimeSummary.getAndResetNextPollingDelayInMillis());
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
+    assertEquals(StepInstance.Status.RUNNING, runtimeSummary.getRuntimeState().getStatus());
+    assertNotNull(runtimeSummary.getRuntimeState().getExecuteTime());
+    assertNotNull(runtimeSummary.getRuntimeState().getModifyTime());
+    assertEquals(1, runtimeSummary.getPendingRecords().size());
     assertEquals(
-        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().get(0).getOldStatus());
-    assertEquals(StepInstance.Status.RUNNING, summary.getPendingRecords().get(0).getNewStatus());
-    assertEquals(artifact, summary.getArtifacts().get("test-artifact"));
-    assertTrue(summary.getTimeline().isEmpty());
+        StepInstance.Status.NOT_CREATED,
+        runtimeSummary.getPendingRecords().getFirst().getOldStatus());
+    assertEquals(
+        StepInstance.Status.RUNNING, runtimeSummary.getPendingRecords().getFirst().getNewStatus());
+    assertEquals(artifact, runtimeSummary.getArtifacts().get("test-artifact"));
+    assertTrue(runtimeSummary.getTimeline().isEmpty());
+    // The pending action should have been cleared after passing it to step runtime
+    assertNull(runtimeSummary.getPendingAction());
   }
 
   @Test
@@ -163,19 +172,21 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
         StepRuntimeSummary.builder().type(StepType.NOOP).stepRetry(stepRetry).build();
     boolean ret = runtimeManager.start(workflowSummary, null, summary);
     assertFalse(ret);
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
     assertEquals(StepInstance.Status.USER_FAILED, summary.getRuntimeState().getStatus());
     assertNotNull(summary.getRuntimeState().getEndTime());
     assertNotNull(summary.getRuntimeState().getModifyTime());
     assertEquals(1, summary.getPendingRecords().size());
     assertEquals(
-        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().get(0).getOldStatus());
+        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().getFirst().getOldStatus());
     assertEquals(
-        StepInstance.Status.USER_FAILED, summary.getPendingRecords().get(0).getNewStatus());
+        StepInstance.Status.USER_FAILED, summary.getPendingRecords().getFirst().getNewStatus());
     assertTrue(summary.getArtifacts().isEmpty());
 
     stepRetry.incrementByStatus(StepInstance.Status.USER_FAILED);
     ret = runtimeManager.start(workflowSummary, null, summary);
     assertFalse(ret);
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
     assertEquals(StepInstance.Status.FATALLY_FAILED, summary.getRuntimeState().getStatus());
     assertNotNull(summary.getRuntimeState().getEndTime());
     assertNotNull(summary.getRuntimeState().getModifyTime());
@@ -189,22 +200,27 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
 
   @Test
   public void testExecute() {
-    StepRuntimeSummary summary =
-        StepRuntimeSummary.builder()
-            .type(StepType.NOOP)
-            .stepRetry(StepInstance.StepRetry.from(Defaults.DEFAULT_RETRY_POLICY))
-            .build();
-    boolean ret = runtimeManager.execute(workflowSummary, null, summary);
+    runtimeSummary.setPendingAction(StepAction.builder().build());
+    assertNotNull(runtimeSummary.getPendingAction());
+    boolean ret = runtimeManager.execute(workflowSummary, null, runtimeSummary);
     assertTrue(ret);
-    assertEquals(StepInstance.Status.FINISHING, summary.getRuntimeState().getStatus());
-    assertNotNull(summary.getRuntimeState().getFinishTime());
-    assertNotNull(summary.getRuntimeState().getModifyTime());
-    assertEquals(1, summary.getPendingRecords().size());
+    // Test execute() method with polling interval
+    assertEquals(Long.valueOf(3000L), runtimeSummary.getAndResetNextPollingDelayInMillis());
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
+    assertEquals(StepInstance.Status.FINISHING, runtimeSummary.getRuntimeState().getStatus());
+    assertNotNull(runtimeSummary.getRuntimeState().getFinishTime());
+    assertNotNull(runtimeSummary.getRuntimeState().getModifyTime());
+    assertEquals(1, runtimeSummary.getPendingRecords().size());
     assertEquals(
-        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().get(0).getOldStatus());
-    assertEquals(StepInstance.Status.FINISHING, summary.getPendingRecords().get(0).getNewStatus());
-    assertEquals(artifact, summary.getArtifacts().get("test-artifact"));
-    assertTrue(summary.getTimeline().isEmpty());
+        StepInstance.Status.NOT_CREATED,
+        runtimeSummary.getPendingRecords().getFirst().getOldStatus());
+    assertEquals(
+        StepInstance.Status.FINISHING,
+        runtimeSummary.getPendingRecords().getFirst().getNewStatus());
+    assertEquals(artifact, runtimeSummary.getArtifacts().get("test-artifact"));
+    assertTrue(runtimeSummary.getTimeline().isEmpty());
+    // The pending action should have been cleared after passing it to step runtime
+    assertNull(runtimeSummary.getPendingAction());
   }
 
   @Test
@@ -218,14 +234,15 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
         StepRuntimeSummary.builder().type(StepType.NOOP).stepRetry(stepRetry).build();
     boolean ret = runtimeManager.execute(workflowSummary, null, summary);
     assertFalse(ret);
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
     assertEquals(StepInstance.Status.PLATFORM_FAILED, summary.getRuntimeState().getStatus());
     assertNotNull(summary.getRuntimeState().getEndTime());
     assertNotNull(summary.getRuntimeState().getModifyTime());
     assertEquals(1, summary.getPendingRecords().size());
     assertEquals(
-        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().get(0).getOldStatus());
+        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().getFirst().getOldStatus());
     assertEquals(
-        StepInstance.Status.PLATFORM_FAILED, summary.getPendingRecords().get(0).getNewStatus());
+        StepInstance.Status.PLATFORM_FAILED, summary.getPendingRecords().getFirst().getNewStatus());
     assertTrue(summary.getArtifacts().isEmpty());
 
     stepRetry.incrementByStatus(StepInstance.Status.PLATFORM_FAILED);
@@ -244,22 +261,26 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
 
   @Test
   public void testTerminate() {
-    StepRuntimeSummary summary =
-        StepRuntimeSummary.builder()
-            .type(StepType.NOOP)
-            .stepRetry(StepInstance.StepRetry.from(Defaults.DEFAULT_RETRY_POLICY))
-            .build();
-    runtimeManager.terminate(workflowSummary, summary, StepInstance.Status.STOPPED);
-    assertEquals(StepInstance.Status.STOPPED, summary.getRuntimeState().getStatus());
-    assertNotNull(summary.getRuntimeState().getEndTime());
-    assertNotNull(summary.getRuntimeState().getModifyTime());
-    assertEquals(1, summary.getPendingRecords().size());
+    runtimeSummary.setPendingAction(StepAction.builder().build());
+    assertNotNull(runtimeSummary.getPendingAction());
+    runtimeManager.terminate(workflowSummary, runtimeSummary, StepInstance.Status.STOPPED);
+    assertNull(runtimeSummary.getAndResetNextPollingDelayInMillis());
+    assertEquals(StepInstance.Status.STOPPED, runtimeSummary.getRuntimeState().getStatus());
+    assertNotNull(runtimeSummary.getRuntimeState().getEndTime());
+    assertNotNull(runtimeSummary.getRuntimeState().getModifyTime());
+    assertEquals(1, runtimeSummary.getPendingRecords().size());
     assertEquals(
-        StepInstance.Status.NOT_CREATED, summary.getPendingRecords().get(0).getOldStatus());
-    assertEquals(StepInstance.Status.STOPPED, summary.getPendingRecords().get(0).getNewStatus());
-    assertEquals(artifact, summary.getArtifacts().get("test-artifact"));
-    assertEquals(1, summary.getTimeline().getTimelineEvents().size());
-    assertEquals("test termination", summary.getTimeline().getTimelineEvents().get(0).getMessage());
+        StepInstance.Status.NOT_CREATED,
+        runtimeSummary.getPendingRecords().getFirst().getOldStatus());
+    assertEquals(
+        StepInstance.Status.STOPPED, runtimeSummary.getPendingRecords().getFirst().getNewStatus());
+    assertEquals(artifact, runtimeSummary.getArtifacts().get("test-artifact"));
+    assertEquals(1, runtimeSummary.getTimeline().getTimelineEvents().size());
+    assertEquals(
+        "test termination",
+        runtimeSummary.getTimeline().getTimelineEvents().getFirst().getMessage());
+    // The pending action should have been cleared after passing it to step runtime
+    assertNull(runtimeSummary.getPendingAction());
   }
 
   @Test
@@ -315,7 +336,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
   public void testMergeNestedParamMap() {
     when(this.defaultParamManager.getDefaultStepParams())
         .thenReturn(
-            ImmutableMap.of(
+            Map.of(
                 "nested-default-new",
                 MapParamDefinition.builder()
                     .name("nested-default-new")
@@ -328,8 +349,8 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
                 MapParamDefinition.builder()
                     .name("nested-common")
                     .value(
-                        Maps.newHashMap(
-                            ImmutableMap.of(
+                        new HashMap<>(
+                            Map.of(
                                 "default-param",
                                 ParamDefinition.buildParamDefinition(
                                     "default-param", "from-default"),
@@ -363,7 +384,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
                 ParamDefinition.buildParamDefinition("test-param", "some-other-default")));
     TypedStep testStep = new TypedStep();
     testStep.setParams(
-        ImmutableMap.of(
+        Map.of(
             "nested-step-new",
             MapParamDefinition.builder()
                 .name("nested-step-new")
@@ -375,8 +396,8 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
             MapParamDefinition.builder()
                 .name("nested-common")
                 .value(
-                    Maps.newHashMap(
-                        ImmutableMap.of(
+                    new HashMap<>(
+                        Map.of(
                             "step-param",
                             ParamDefinition.buildParamDefinition("step-param", "from-step"),
                             "common-param",
@@ -449,7 +470,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
   public void testMergeNestedStringMap() {
     when(this.defaultParamManager.getDefaultStepParams())
         .thenReturn(
-            ImmutableMap.of(
+            Map.of(
                 "nested-default-new",
                 StringMapParamDefinition.builder()
                     .name("nested-default-new")
@@ -469,7 +490,7 @@ public class StepRuntimeManagerTest extends MaestroEngineBaseTest {
                 ParamDefinition.buildParamDefinition("test-param", "some-other-default")));
     TypedStep testStep = new TypedStep();
     testStep.setParams(
-        ImmutableMap.of(
+        Map.of(
             "nested-step-new",
             StringMapParamDefinition.builder()
                 .name("nested-step-new")

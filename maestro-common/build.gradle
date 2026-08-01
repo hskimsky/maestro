@@ -1,10 +1,8 @@
 dependencies {
     implementation jacksonDatabindDep
-    implementation javaxInjectDep
-    implementation javaxValidationDep
+    implementation jakartaInjectDep
+    implementation jakartaValidationDep
     implementation jacksonYamlDep
-    implementation quartzDep
-    implementation jodaTimeDep
     implementation(cronutilsDep) {
         exclude group: 'org.glassfish'
     }
@@ -15,5 +13,6 @@ dependencies {
 
     testFixturesImplementation junitDep
     testFixturesImplementation jacksonDatabindDep
+    testFixturesImplementation mockitoCoreDep
     testFixturesRuntimeOnly junitEngineDep
 }

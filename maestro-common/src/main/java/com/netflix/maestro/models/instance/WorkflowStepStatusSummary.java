@@ -16,20 +16,20 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.annotations.Nullable;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import javax.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
  * Class to hold step overview, including start time and end time, for all step instances in a given
  * status. The steps in the list must be sorted by the ordinal id (the first element in the list).
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"cnt", "steps"},
@@ -64,7 +64,7 @@ public class WorkflowStepStatusSummary {
   @JsonIgnore
   public void sortSteps() {
     if (steps != null) {
-      steps.sort(Comparator.comparingLong(o -> o.get(0)));
+      steps.sort(Comparator.comparingLong(List::getFirst));
     }
   }
 }

@@ -12,21 +12,21 @@
  */
 package com.netflix.maestro.validations;
 
-import com.netflix.maestro.models.definition.Duration;
+import com.netflix.maestro.models.definition.ParsableLong;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.ParamType;
 import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.utils.DurationParser;
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.function.Function;
-import javax.validation.Constraint;
-import javax.validation.ConstraintValidator;
-import javax.validation.ConstraintValidatorContext;
-import javax.validation.Payload;
 
 /** Timeout validation. Note that it won't be able to validate string interpolated timeout. */
 @Documented
@@ -44,7 +44,7 @@ public @interface TimeoutConstraint {
   Class<? extends Payload>[] payload() default {};
 
   /** Timeout validator. */
-  class TimeoutValidator implements ConstraintValidator<TimeoutConstraint, Duration> {
+  class TimeoutValidator implements ConstraintValidator<TimeoutConstraint, ParsableLong> {
     private static final String DUMMY_EVALUATED_RESULT = "123";
     private static final Long DUMMY_EVALUATION_TIME = 1L;
     private static final Function<ParamDefinition, Parameter> IGNORE_INTERPOLATION_MAPPING =
@@ -59,13 +59,13 @@ public @interface TimeoutConstraint {
         };
 
     @Override
-    public boolean isValid(Duration timeout, ConstraintValidatorContext context) {
+    public boolean isValid(ParsableLong timeout, ConstraintValidatorContext context) {
       if (timeout == null) {
         return true;
       }
 
       try {
-        DurationParser.getDurationWithParamInMillis(timeout, IGNORE_INTERPOLATION_MAPPING);
+        DurationParser.getTimeoutWithParamInMillis(timeout, IGNORE_INTERPOLATION_MAPPING);
       } catch (IllegalArgumentException iae) {
         context.buildConstraintViolationWithTemplate(iae.getMessage()).addConstraintViolation();
         return false;

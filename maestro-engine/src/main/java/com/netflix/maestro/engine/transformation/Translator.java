@@ -18,15 +18,13 @@ package com.netflix.maestro.engine.transformation;
  * @param <T> Source data model type.
  * @param <R> Destination data model type.
  */
+@FunctionalInterface
 public interface Translator<T, R> {
-  /** conductor retry limit. */
-  int CONDUCTOR_RETRY_NUM = 999;
+  /** flow engine task default polling interval in milliseconds. */
+  int DEFAULT_FLOW_TASK_DELAY_IN_MILLIS = 0;
 
-  /** conductor default retry delay in seconds. */
-  int CONDUCTOR_RETRY_DELAY = 1;
-
-  /** conductor response timeout limit. */
-  long CONDUCTOR_RESPONSE_TIMEOUT = 24 * 60 * 60;
+  /** flow engine task default reconciliation interval in milliseconds. */
+  int DEFAULT_FLOW_TASK_RECONCILIATION_INTERVAL_IN_MILLIS = 60000;
 
   /**
    * Translate function.

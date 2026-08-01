@@ -14,7 +14,7 @@ package com.netflix.maestro.models.timeline;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -26,10 +26,10 @@ import lombok.Getter;
 import lombok.ToString;
 
 /** Timeline event to log a message. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
-    value = {"timestamp", "type", "action", "author", "message", "reason"},
+    value = {"timestamp", "type", "action", "author", "message", "reason", "info"},
     alphabetic = true)
 @JsonDeserialize(builder = TimelineActionEvent.TimelineActionEventBuilder.class)
 @Builder
@@ -42,6 +42,7 @@ public class TimelineActionEvent implements TimelineEvent {
   private final User author;
   private final String message;
   private final String reason;
+  private final Long info; // optional numeric info field to carry extra info
 
   @Override
   public Type getType() {
@@ -62,19 +63,20 @@ public class TimelineActionEvent implements TimelineEvent {
     return Objects.equals(this.action, other.action)
         && Objects.equals(this.author, other.author)
         && Objects.equals(this.message, other.message)
-        && Objects.equals(this.reason, other.reason);
+        && Objects.equals(this.reason, other.reason)
+        && Objects.equals(this.info, other.info);
   }
 
   /** builder class for lombok and jackson. */
   @JsonPOJOBuilder(withPrefix = "")
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   public static final class TimelineActionEventBuilder {
     /** overridden build method. */
     public TimelineActionEvent build() {
       if (timestamp == null) {
         timestamp = System.currentTimeMillis();
       }
-      return new TimelineActionEvent(timestamp, action, author, message, reason);
+      return new TimelineActionEvent(timestamp, action, author, message, reason, info);
     }
 
     /** build action with an enum object. */

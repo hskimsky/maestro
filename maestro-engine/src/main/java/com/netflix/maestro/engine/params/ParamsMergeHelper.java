@@ -12,10 +12,8 @@
  */
 package com.netflix.maestro.engine.params;
 
-import com.google.common.collect.ImmutableMap;
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.engine.execution.RunRequest;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.exceptions.MaestroValidationException;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
@@ -33,6 +31,7 @@ import com.netflix.maestro.models.parameter.ParamValidator;
 import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.utils.MapHelper;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,28 +51,28 @@ import lombok.With;
 /** Helper for Params merging and cleanup. */
 public final class ParamsMergeHelper {
 
-  private static final EnumSet<ParamMode> DEFAULT_UPDATE_MODES =
+  private static final Set<ParamMode> DEFAULT_UPDATE_MODES =
       EnumSet.of(ParamMode.MUTABLE, ParamMode.MUTABLE_ON_START, ParamMode.MUTABLE_ON_START_RESTART);
-  private static final EnumSet<ParamMode> RESTART_UPDATE_MODES =
+  private static final Set<ParamMode> RESTART_UPDATE_MODES =
       EnumSet.of(ParamMode.MUTABLE, ParamMode.MUTABLE_ON_START_RESTART);
 
-  /** Allowed update modes for each stage for non system. * */
+  /** Allowed update modes for each stage for non system. */
   private static final Map<ParamSource, Set<ParamMode>> ALLOWED_UPDATE_MODES =
-      new ImmutableMap.Builder<ParamSource, Set<ParamMode>>()
-          .put(ParamSource.DEFINITION, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.FOREACH, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.LAUNCH, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.SIGNAL, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.SUBWORKFLOW, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.TEMPLATE, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.TIME_TRIGGER, DEFAULT_UPDATE_MODES)
-          .put(ParamSource.OUTPUT_PARAMETER, EnumSet.of(ParamMode.MUTABLE))
-          .put(ParamSource.RESTART, RESTART_UPDATE_MODES)
-          .build();
+      Map.of(
+          ParamSource.DEFINITION, DEFAULT_UPDATE_MODES,
+          ParamSource.FOREACH, DEFAULT_UPDATE_MODES,
+          ParamSource.WHILE, DEFAULT_UPDATE_MODES,
+          ParamSource.LAUNCH, DEFAULT_UPDATE_MODES,
+          ParamSource.SIGNAL, DEFAULT_UPDATE_MODES,
+          ParamSource.SUBWORKFLOW, DEFAULT_UPDATE_MODES,
+          ParamSource.TEMPLATE, DEFAULT_UPDATE_MODES,
+          ParamSource.TIME_TRIGGER, DEFAULT_UPDATE_MODES,
+          ParamSource.OUTPUT_PARAMETER, EnumSet.of(ParamMode.MUTABLE),
+          ParamSource.RESTART, RESTART_UPDATE_MODES);
 
-  /** Mapping of internal param mode to mode. * */
+  /** Mapping of internal param mode to mode. */
   private static final Map<InternalParamMode, ParamMode> INTERNAL_PARAM_MODE_TO_MODE =
-      ImmutableMap.of(
+      Map.of(
           InternalParamMode.OPTIONAL,
           ParamMode.MUTABLE,
           InternalParamMode.REQUIRED,
@@ -87,7 +86,7 @@ public final class ParamsMergeHelper {
   private static final Set<InternalParamMode> RESTRICTED_INTERNAL_MODES =
       EnumSet.of(InternalParamMode.RESERVED);
 
-  /** Param mode strictness in increasing order. * */
+  /** Param mode strictness in increasing order. */
   private static final List<ParamMode> PARAM_MODE_STRICTNESS =
       Arrays.asList(
           ParamMode.MUTABLE,
@@ -604,7 +603,7 @@ public final class ParamsMergeHelper {
    */
   private static Set<ParamMode> getAllowedModes(MergeContext context) {
     final Set<ParamMode> allowedModesFromMergeSource =
-        new HashSet<>(
+        EnumSet.copyOf(
             ALLOWED_UPDATE_MODES.getOrDefault(context.getMergeSource(), DEFAULT_UPDATE_MODES));
     if (!context.isRestartMerge()) {
       return allowedModesFromMergeSource;
@@ -683,6 +682,11 @@ public final class ParamsMergeHelper {
             "ParameterDefinition type mismatch, [%s] is not a [MAP] but [%s]",
             key, paramDef.getType().toString());
       }
+      Checks.checkTrue(
+          paramDef.isLiteral(),
+          "MAP param [%s] definition exp=[%s] is not a literal",
+          key,
+          paramDef.getExpression());
       return paramDef.asMapParamDef().getValue();
     } else {
       return new LinkedHashMap<>();
@@ -698,6 +702,11 @@ public final class ParamsMergeHelper {
             "ParameterDefinition type mismatch, [%s] is not a [STRING_MAP] but [%s]",
             key, paramDef.getType().toString());
       }
+      Checks.checkTrue(
+          paramDef.isLiteral(),
+          "STRING_MAP param [%s] definition exp=[%s] is not a literal",
+          key,
+          paramDef.getExpression());
       return paramDef.asStringMapParamDef().getValue();
     } else {
       return new LinkedHashMap<>();

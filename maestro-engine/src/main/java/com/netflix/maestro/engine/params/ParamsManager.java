@@ -16,12 +16,8 @@ import com.netflix.maestro.engine.execution.RunRequest;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
 import com.netflix.maestro.engine.steps.StepRuntime;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.definition.Step;
-import com.netflix.maestro.models.definition.StepDependenciesDefinition;
-import com.netflix.maestro.models.definition.StepDependencyType;
-import com.netflix.maestro.models.definition.StepOutputsDefinition;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.models.initiator.Initiator;
 import com.netflix.maestro.models.initiator.UpstreamInitiator;
@@ -34,8 +30,11 @@ import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.ParamMode;
 import com.netflix.maestro.models.parameter.ParamSource;
 import com.netflix.maestro.models.parameter.Parameter;
-import com.netflix.maestro.utils.MapHelper;
-import java.util.Collection;
+import com.netflix.maestro.models.signal.SignalDependenciesDefinition;
+import com.netflix.maestro.models.signal.SignalOutputsDefinition;
+import com.netflix.maestro.models.signal.SignalTransformer;
+import com.netflix.maestro.utils.ObjectHelper;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -146,6 +145,16 @@ public class ParamsManager {
           globalDefault,
           ParamsMergeHelper.MergeContext.stepCreate(ParamSource.SYSTEM_DEFAULT));
     }
+    // Merge in params applicable to step type
+    Optional<Map<String, ParamDefinition>> defaultStepTypeParams =
+        defaultParamManager.getDefaultParamsForType(stepDefinition.getType());
+    if (defaultStepTypeParams.isPresent()) {
+      LOG.debug("Merging step level default for {}", stepDefinition.getType());
+      ParamsMergeHelper.mergeParams(
+          allParamDefs,
+          defaultStepTypeParams.get(),
+          ParamsMergeHelper.MergeContext.stepCreate(ParamSource.SYSTEM_DEFAULT));
+    }
     // Merge in injected params returned by step if present (template schema)
     Map<String, ParamDefinition> injectedParams =
         stepRuntime.injectRuntimeParams(workflowSummary, stepDefinition);
@@ -156,16 +165,6 @@ public class ParamsManager {
           allParamDefs,
           injectedParams,
           ParamsMergeHelper.MergeContext.stepCreate(ParamSource.TEMPLATE_SCHEMA));
-    }
-    // Merge in params applicable to step type
-    Optional<Map<String, ParamDefinition>> defaultStepTypeParams =
-        defaultParamManager.getDefaultParamsForType(stepDefinition.getType());
-    if (defaultStepTypeParams.isPresent()) {
-      LOG.debug("Merging step level default for {}", stepDefinition.getType());
-      ParamsMergeHelper.mergeParams(
-          allParamDefs,
-          defaultStepTypeParams.get(),
-          ParamsMergeHelper.MergeContext.stepCreate(ParamSource.SYSTEM_DEFAULT));
     }
     // Merge in workflow and step info
     ParamsMergeHelper.mergeParams(
@@ -400,19 +399,14 @@ public class ParamsManager {
    * @param dependencies definition of step dependencies
    * @return a map of dependency params
    */
-  public static Map<StepDependencyType, List<MapParameter>> getStepDependenciesParameters(
-      Collection<StepDependenciesDefinition> dependencies) {
-    if (ObjectHelper.isCollectionEmptyOrNull(dependencies)) {
-      return Collections.emptyMap();
+  public static List<MapParameter> getSignalDependenciesParameters(
+      SignalDependenciesDefinition dependencies) {
+    if (dependencies == null || dependencies.definitions() == null) {
+      return Collections.emptyList();
     }
-    return dependencies.stream()
-        .collect(
-            MapHelper.toListMap(
-                StepDependenciesDefinition::getType,
-                e ->
-                    e.getDefinitions().stream()
-                        .map(v -> (MapParameter) v.toParameter())
-                        .collect(Collectors.toList())));
+    return dependencies.definitions().stream()
+        .map(SignalTransformer::transform)
+        .collect(Collectors.toList());
   }
 
   /**
@@ -421,18 +415,12 @@ public class ParamsManager {
    * @param outputs definition of step output
    * @return a map of output in map param format
    */
-  public static Map<StepOutputsDefinition.StepOutputType, List<MapParameter>>
-      getStepOutputsParameters(Collection<StepOutputsDefinition> outputs) {
-    if (ObjectHelper.isCollectionEmptyOrNull(outputs)) {
-      return Collections.emptyMap();
+  public static List<MapParameter> getSignalOutputsParameters(SignalOutputsDefinition outputs) {
+    if (outputs == null || outputs.definitions() == null) {
+      return new ArrayList<>();
     }
-    return outputs.stream()
-        .collect(
-            MapHelper.toListMap(
-                StepOutputsDefinition::getType,
-                e ->
-                    e.asSignalOutputsDefinition().getDefinitions().stream()
-                        .map(v -> (MapParameter) v.toParameter())
-                        .collect(Collectors.toList())));
+    return outputs.definitions().stream()
+        .map(SignalTransformer::transform)
+        .collect(Collectors.toList());
   }
 }

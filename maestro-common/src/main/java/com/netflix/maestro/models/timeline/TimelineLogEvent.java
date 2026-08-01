@@ -15,7 +15,7 @@ package com.netflix.maestro.models.timeline;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -26,7 +26,7 @@ import lombok.Getter;
 import lombok.ToString;
 
 /** Timeline event to log a message. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"timestamp", "type", "level", "message"},
@@ -62,7 +62,7 @@ public class TimelineLogEvent implements TimelineEvent {
 
   /** builder class for lombok and jackson. */
   @JsonPOJOBuilder(withPrefix = "")
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   public static final class TimelineLogEventBuilder {
     /** overridden build method. */
     public TimelineLogEvent build() {
@@ -100,7 +100,7 @@ public class TimelineLogEvent implements TimelineEvent {
     return TimelineLogEvent.builder().level(Level.DEBUG).message(template, args).build();
   }
 
-  /** static method to generate a info level {@link TimelineLogEvent}. */
+  /** static method to generate an info level {@link TimelineLogEvent}. */
   @JsonIgnore
   public static TimelineLogEvent info(String template, Object... args) {
     return TimelineLogEvent.builder().level(Level.INFO).message(template, args).build();
@@ -112,7 +112,7 @@ public class TimelineLogEvent implements TimelineEvent {
     return TimelineLogEvent.builder().level(Level.WARN).message(template, args).build();
   }
 
-  /** static method to generate a error level {@link TimelineLogEvent}. */
+  /** static method to generate an error level {@link TimelineLogEvent}. */
   @JsonIgnore
   public static TimelineLogEvent error(String template, Object... args) {
     return TimelineLogEvent.builder().level(Level.ERROR).message(template, args).build();

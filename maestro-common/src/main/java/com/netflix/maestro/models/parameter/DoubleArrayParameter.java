@@ -14,7 +14,7 @@ package com.netflix.maestro.models.parameter;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -32,7 +32,7 @@ import lombok.experimental.SuperBuilder;
  * <p>SHOULD NOT mutate the evaluated array data.
  */
 @SuppressFBWarnings({"EI_EXPOSE_REP", "EI_EXPOSE_REP2"})
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -55,7 +55,7 @@ public final class DoubleArrayParameter extends AbstractParameter {
   private final BigDecimal[] value;
   private double[] evaluatedResult;
 
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   static final class DoubleArrayParameterBuilderImpl
       extends DoubleArrayParameterBuilder<DoubleArrayParameter, DoubleArrayParameterBuilderImpl> {
@@ -95,5 +95,10 @@ public final class DoubleArrayParameter extends AbstractParameter {
       return builder.value(getValue()).expression(getExpression()).build();
     }
     return builder.value(ParamHelper.toDecimalArray(getName(), evaluatedResult)).build();
+  }
+
+  @Override
+  public double[] getLiteralValue() {
+    return ParamHelper.toDoubleArray(getName(), getValue());
   }
 }

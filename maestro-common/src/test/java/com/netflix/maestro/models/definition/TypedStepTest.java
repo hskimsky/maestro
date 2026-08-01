@@ -13,10 +13,10 @@
 package com.netflix.maestro.models.definition;
 
 import com.netflix.maestro.MaestroBaseTest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
 import java.util.Set;
-import javax.validation.ConstraintViolation;
-import javax.validation.Validation;
-import javax.validation.Validator;
 import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Before;
@@ -42,8 +42,8 @@ public class TypedStepTest extends MaestroBaseTest {
     Assertions.assertThat(constraintViolations).isEmpty();
 
     Assert.assertNotNull(typedStep1);
-    Assert.assertNotNull(typedStep1.getDependencies());
-    Assert.assertNotNull(typedStep1.getOutputs());
+    Assert.assertNotNull(typedStep1.getSignalDependencies());
+    Assert.assertNotNull(typedStep1.getSignalOutputs());
 
     TypedStep typedStep2 =
         (TypedStep) MAPPER.readValue(MAPPER.writeValueAsString(typedStep1), Step.class);

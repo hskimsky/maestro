@@ -16,23 +16,24 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
+import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.exceptions.MaestroUnprocessableEntityException;
-import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.parameter.ParamSource;
 import com.netflix.maestro.models.timeline.TimelineEvent;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.IdHelper;
 import java.util.List;
 import lombok.Data;
 
 /**
  * Upstream workflow initiator with its parent workflow and the step (subworkflow or foreach or
- * template) info.
+ * while or template) info.
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(alphabetic = true)
 @Data
@@ -49,14 +50,15 @@ public abstract class UpstreamInitiator implements Initiator {
 
   /** helper method to get the parent. */
   @JsonIgnore
+  @Override
   public Info getParent() {
-    return ancestors.get(ancestors.size() - 1);
+    return ancestors.getLast();
   }
 
   /** helper method to get the root. */
   @JsonIgnore
   public Info getRoot() {
-    return ancestors.get(0);
+    return ancestors.getFirst();
   }
 
   /**
@@ -87,10 +89,10 @@ public abstract class UpstreamInitiator implements Initiator {
   }
 
   /** workflow step initiator information. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonPropertyOrder(
-      value = {"workflow_id", "instance_id", "run_id", "step_id", "step_attempt_id"},
+      value = {"workflow_id", "instance_id", "run_id", "step_id", "step_attempt_id", "sync"},
       alphabetic = true)
   @Data
   public static class Info {
@@ -99,6 +101,8 @@ public abstract class UpstreamInitiator implements Initiator {
     private long runId;
     private String stepId;
     private long stepAttemptId;
+    // this is used to indicate if the downstream should be run in sync mode, default is true
+    @Nullable private Boolean sync;
 
     @Override
     public String toString() {
@@ -108,7 +112,12 @@ public abstract class UpstreamInitiator implements Initiator {
 
     @JsonIgnore
     public boolean isInline() {
-      return workflowId.startsWith(Constants.MAESTRO_PREFIX);
+      return IdHelper.isInlineWorkflowId(workflowId);
+    }
+
+    @JsonIgnore
+    public boolean isAsync() {
+      return sync != null && !sync;
     }
   }
 
@@ -119,6 +128,8 @@ public abstract class UpstreamInitiator implements Initiator {
         return new SubworkflowInitiator();
       case FOREACH:
         return new ForeachInitiator();
+      case WHILE:
+        return new WhileInitiator();
       case TEMPLATE:
         return new TemplateInitiator();
       default:

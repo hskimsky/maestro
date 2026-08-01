@@ -15,7 +15,7 @@ package com.netflix.maestro.models.definition;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -25,14 +25,16 @@ import com.netflix.maestro.models.trigger.SignalTrigger;
 import com.netflix.maestro.models.trigger.TimeTrigger;
 import com.netflix.maestro.utils.MapHelper;
 import com.netflix.maestro.validations.MaestroIdConstraint;
+import com.netflix.maestro.validations.MaestroNameSizeConstraint;
+import com.netflix.maestro.validations.SignalTriggerConstraint;
 import com.netflix.maestro.validations.TagListConstraint;
 import com.netflix.maestro.validations.TimeTriggerConstraint;
 import com.netflix.maestro.validations.TimeoutConstraint;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import javax.validation.Valid;
-import javax.validation.constraints.Size;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -45,7 +47,7 @@ import lombok.Getter;
  *
  * <p>Maestro also returns it when a workflow version is fetched by users over API.
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -72,8 +74,7 @@ public class Workflow {
    * Name of the workflow. Can be absent by user. Can be filled by workflow id if absent - use
    * helper method in WorkflowHelper.
    */
-  @Size(max = Constants.NAME_LENGTH_LIMIT)
-  private final String name;
+  @MaestroNameSizeConstraint private final String name;
 
   @Size(max = Constants.FIELD_SIZE_LIMIT)
   private final String description;
@@ -81,10 +82,10 @@ public class Workflow {
   @Valid @TagListConstraint private final TagList tags;
 
   /** Workflow timeout in seconds. */
-  @TimeoutConstraint private final Duration timeout;
+  @TimeoutConstraint private final ParsableLong timeout;
 
   @Valid private final List<@TimeTriggerConstraint TimeTrigger> timeTriggers;
-  @Valid private final List<SignalTrigger> signalTriggers;
+  @Valid private final List<@SignalTriggerConstraint SignalTrigger> signalTriggers;
   private final Criticality criticality;
   private final Long instanceStepConcurrency; // null means unset and disabled
 
@@ -92,14 +93,13 @@ public class Workflow {
 
   @Valid private final List<Step> steps;
 
-  @SuppressWarnings({"PMD.NullAssignment"})
   @Builder(toBuilder = true)
   Workflow(
       String id,
-      @Size(max = Constants.NAME_LENGTH_LIMIT) String name,
+      String name,
       @Size(max = Constants.FIELD_SIZE_LIMIT) String description,
       @Valid TagList tags,
-      Duration timeout,
+      ParsableLong timeout,
       @Valid List<TimeTrigger> timeTriggers,
       @Valid List<SignalTrigger> signalTriggers,
       Criticality criticality,
@@ -125,7 +125,7 @@ public class Workflow {
   }
 
   /** builder class for lombok and jackson. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   public static final class WorkflowBuilder {}
 
@@ -147,7 +147,19 @@ public class Workflow {
           stepIds.add(step.getId());
           if (step.getType() == StepType.FOREACH) {
             getAllStepIds(((ForeachStep) step).getSteps(), stepIds);
+          } else if (step.getType() == StepType.WHILE) {
+            getAllStepIds(((WhileStep) step).getSteps(), stepIds);
           }
         });
+  }
+
+  /**
+   * Returns workflow id if workflow name is missing and was not provided by the user.
+   *
+   * @return workflow name
+   */
+  @JsonIgnore
+  public String getWorkflowNameOrDefault() {
+    return getName() != null ? getName() : getId();
   }
 }

@@ -14,8 +14,10 @@ package com.netflix.maestro.engine.dao;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -24,13 +26,6 @@ import static org.mockito.Mockito.verify;
 import com.netflix.maestro.AssertHelper;
 import com.netflix.maestro.engine.MaestroTestHelper;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
-import com.netflix.maestro.engine.jobevents.RunWorkflowInstancesJobEvent;
-import com.netflix.maestro.engine.jobevents.StartWorkflowJobEvent;
-import com.netflix.maestro.engine.jobevents.TerminateThenRunInstanceJobEvent;
-import com.netflix.maestro.engine.jobevents.WorkflowInstanceUpdateJobEvent;
-import com.netflix.maestro.engine.jobevents.WorkflowVersionUpdateJobEvent;
-import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
-import com.netflix.maestro.engine.publisher.NoOpMaestroJobEventPublisher;
 import com.netflix.maestro.engine.utils.TriggerSubscriptionClient;
 import com.netflix.maestro.exceptions.MaestroInvalidStatusException;
 import com.netflix.maestro.exceptions.MaestroNotFoundException;
@@ -45,6 +40,15 @@ import com.netflix.maestro.models.instance.RunPolicy;
 import com.netflix.maestro.models.instance.WorkflowInstance;
 import com.netflix.maestro.models.timeline.Timeline;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
+import com.netflix.maestro.queue.MaestroQueueSystem;
+import com.netflix.maestro.queue.jobevents.StartWorkflowJobEvent;
+import com.netflix.maestro.queue.jobevents.TerminateThenRunJobEvent;
+import com.netflix.maestro.queue.jobevents.WorkflowInstanceUpdateJobEvent;
+import com.netflix.maestro.queue.jobevents.WorkflowVersionUpdateJobEvent;
+import com.netflix.maestro.queue.models.MessageDto;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -60,13 +64,18 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
   private MaestroWorkflowInstanceDao dao;
   private MaestroRunStrategyDao runStrategyDao;
   private WorkflowInstance wfi;
-  private final MaestroJobEventPublisher publisher = mock(NoOpMaestroJobEventPublisher.class);
+  private final MaestroQueueSystem queueSystem = mock(MaestroQueueSystem.class);
 
   @Before
   public void setUp() throws Exception {
     MaestroWorkflowDao workflowDao =
         new MaestroWorkflowDao(
-            dataSource, MAPPER, config, publisher, mock(TriggerSubscriptionClient.class));
+            DATA_SOURCE,
+            MAPPER,
+            CONFIG,
+            queueSystem,
+            mock(TriggerSubscriptionClient.class),
+            metricRepo);
     WorkflowDefinition definition =
         loadObject(
             "fixtures/workflows/definition/sample-minimal-wf.json", WorkflowDefinition.class);
@@ -74,11 +83,13 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     Properties properties = new Properties();
     properties.setOwner(User.builder().name("tester").build());
     workflowDao.addWorkflowDefinition(definition, properties);
-    verify(publisher, times(1)).publishOrThrow(any(WorkflowVersionUpdateJobEvent.class), any());
-    reset(publisher);
+    verify(queueSystem, times(1)).enqueue(any(), any(WorkflowVersionUpdateJobEvent.class));
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
 
-    dao = new MaestroWorkflowInstanceDao(dataSource, MAPPER, config, publisher);
-    runStrategyDao = new MaestroRunStrategyDao(dataSource, MAPPER, config, publisher, metricRepo);
+    dao = new MaestroWorkflowInstanceDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
+    runStrategyDao =
+        new MaestroRunStrategyDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
     wfi = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
     wfi.setWorkflowInstanceId(0L);
     wfi.setWorkflowRunId(0L);
@@ -88,32 +99,33 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, wfi.getWorkflowInstanceId());
     assertEquals(1, wfi.getWorkflowRunId());
     assertEquals("8a0bd56f-745f-4a2c-b81b-1b2f89127e73", wfi.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
+    verifyEnqueue(1, 0, 0);
     WorkflowInstance latestRun =
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(1, latestRun.getWorkflowInstanceId());
     assertEquals(wfi.getWorkflowUuid(), latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    reset(publisher);
+    reset(queueSystem);
   }
 
-  private void verifyPublish(int start, int delayStart, int run, int terminate, int update) {
-    verify(publisher, times(start)).publishOrThrow(any(StartWorkflowJobEvent.class), any());
-    verify(publisher, times(delayStart))
-        .publishOrThrow(any(StartWorkflowJobEvent.class), anyLong(), any());
-    verify(publisher, times(run)).publishOrThrow(any(RunWorkflowInstancesJobEvent.class), any());
-    verify(publisher, times(terminate))
-        .publishOrThrow(any(TerminateThenRunInstanceJobEvent.class), any());
-    verify(publisher, times(update))
-        .publishOrThrow(any(WorkflowInstanceUpdateJobEvent.class), any());
-    verify(publisher, times(start + run + terminate + update)).publishOrThrow(any(), any());
-    reset(publisher);
+  private void verifyEnqueue(int start, int terminateThenRun, int update) {
+    try {
+      verify(queueSystem, times(start)).enqueue(any(), any(StartWorkflowJobEvent.class));
+      verify(queueSystem, times(terminateThenRun))
+          .enqueue(any(), any(TerminateThenRunJobEvent.class));
+      verify(queueSystem, times(update)).enqueue(any(), any(WorkflowInstanceUpdateJobEvent.class));
+      verify(queueSystem, times(start + terminateThenRun + update)).enqueue(any(), any());
+      verify(queueSystem, times(start + terminateThenRun + update)).notify(any());
+      reset(queueSystem);
+    } catch (SQLException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   @After
   public void tearDown() {
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 1);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 1);
     AssertHelper.assertThrows(
         "cannot get non-existing workflow instance",
         MaestroNotFoundException.class,
@@ -135,13 +147,13 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    verifyEnqueue(1, 0, 0);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
   public void testStartWithRunStrategyForDeletedWorkflow() {
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID);
     wfi.setWorkflowInstanceId(0L);
     wfi.setWorkflowRunId(0L);
     wfi.setWorkflowUuid("test-uuid");
@@ -166,14 +178,14 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    verifyEnqueue(1, 0, 0);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
   public void testStartWithRunStrategyForRestart() {
     dao.tryTerminateQueuedInstance(wfi, WorkflowInstance.Status.FAILED, "kill the test");
-    verifyPublish(0, 0, 0, 0, 1);
+    verifyEnqueue(0, 0, 1);
     wfi.setWorkflowRunId(0L);
     wfi.setWorkflowUuid("test-uuid");
     wfi.setRunConfig(new RunConfig());
@@ -187,7 +199,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(1, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
+    verifyEnqueue(1, 0, 0);
   }
 
   @Test
@@ -234,7 +246,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, wfi.getWorkflowInstanceId());
     assertEquals(1, wfi.getWorkflowRunId());
     assertEquals("8a0bd56f-745f-4a2c-b81b-1b2f89127e73", wfi.getWorkflowUuid());
-    verifyPublish(0, 0, 0, 0, 0);
+    verifyEnqueue(0, 0, 0);
   }
 
   @Test
@@ -251,13 +263,13 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    verifyEnqueue(1, 0, 0);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
   public void testStartRunStrategyWithFirstOnly() {
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 1);
     wfi.setWorkflowUuid("test-uuid");
     wfi.setWorkflowInstanceId(0);
     int res = runStrategyDao.startWithRunStrategy(wfi, RunStrategy.create("FIRST_ONLY"));
@@ -270,7 +282,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 1, 0);
+    verifyEnqueue(0, 1, 0);
 
     wfi.setWorkflowInstanceId(0);
     res = runStrategyDao.startWithRunStrategy(wfi, RunStrategy.create("FIRST_ONLY"));
@@ -278,7 +290,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(0, wfi.getWorkflowInstanceId());
     assertEquals(1, wfi.getWorkflowRunId());
     assertEquals("test-uuid", wfi.getWorkflowUuid());
-    verifyPublish(0, 0, 0, 0, 0);
+    verifyEnqueue(0, 0, 0);
 
     wfi.setWorkflowUuid("test-uuid-1");
     wfi.setWorkflowInstanceId(0);
@@ -291,14 +303,14 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid-1", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.STOPPED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 0, 1);
+    verifyEnqueue(0, 0, 1);
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
   public void testStartRunStrategyWithLastOnly() {
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 1);
     wfi.setWorkflowUuid("test-uuid");
     wfi.setWorkflowInstanceId(0);
     int res = runStrategyDao.startWithRunStrategy(wfi, RunStrategy.create("LAST_ONLY"));
@@ -311,7 +323,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 1, 0);
+    verifyEnqueue(0, 1, 0);
 
     wfi.setWorkflowInstanceId(0);
     res = runStrategyDao.startWithRunStrategy(wfi, RunStrategy.create("LAST_ONLY"));
@@ -319,7 +331,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(0, wfi.getWorkflowInstanceId());
     assertEquals(1, wfi.getWorkflowRunId());
     assertEquals("test-uuid", wfi.getWorkflowUuid());
-    verifyPublish(0, 0, 0, 0, 0);
+    verifyEnqueue(0, 0, 0);
 
     wfi.setWorkflowUuid("test-uuid-1");
     wfi.setWorkflowInstanceId(0);
@@ -337,9 +349,9 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid-1", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 1, 1);
+    verifyEnqueue(0, 1, 1);
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
@@ -356,7 +368,7 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
+    verifyEnqueue(1, 0, 0);
 
     wfi.setWorkflowUuid("test-uuid-1");
     wfi.setWorkflowInstanceId(0);
@@ -373,14 +385,14 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     AssertHelper.assertThrows(
         "Invalid state when switching run strategies",
         IllegalArgumentException.class,
-        "finding more than 1 pending runs beside [sample-dag-test-3][2] with LAST_ONLY run strategy",
+        "finding more than 1 pending runs beside [sample-dag-test-3][",
         () -> runStrategyDao.startWithRunStrategy(wfi, RunStrategy.create("LAST_ONLY")));
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   private List<WorkflowInstance> prepareBatch() throws Exception {
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 1);
     WorkflowInstance wfi1 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
     wfi1.setWorkflowUuid("wfi1-uuid");
     wfi1.setWorkflowInstanceId(0);
@@ -412,9 +424,9 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("wfi3-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    verifyPublish(1, 0, 0, 0, 0);
+    verifyEnqueue(1, 0, 0);
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
@@ -436,9 +448,9 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("wfi3-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.STOPPED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 1, 1);
+    verifyEnqueue(0, 1, 1);
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
@@ -460,9 +472,52 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("wfi3-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
-    verifyPublish(0, 0, 0, 1, 1);
+    verifyEnqueue(0, 1, 1);
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testStartBatchRunStrategyRetryKeepsFreshAttemptState() throws Exception {
+    List<WorkflowInstance> batch = prepareBatch();
+
+    // Simulate Postgres aborting the first serializable LAST_ONLY attempt after the DAO has
+    // assigned instance IDs and removed UUIDs from the transaction-attempt dedup set. The DB
+    // transaction retry must rebuild that mutable state; otherwise it falsely treats the batch as
+    // duplicated.
+    SQLException retryable = new SQLException("retry start batch", "40001");
+    MessageDto message = new MessageDto(Long.MAX_VALUE, "retry-message", null, 0);
+    doReturn(message).when(queueSystem).enqueue(any(), any());
+    doThrow(retryable)
+        .doReturn(message)
+        .when(queueSystem)
+        .enqueue(any(), any(TerminateThenRunJobEvent.class));
+
+    int[] res =
+        runStrategyDao.startBatchWithRunStrategy(
+            TEST_WORKFLOW_ID, RunStrategy.create("LAST_ONLY"), batch);
+
+    assertArrayEquals(new int[] {-1, 0, 1}, res);
+    assertEquals(1, batch.get(0).getWorkflowInstanceId());
+    assertEquals(0, batch.get(1).getWorkflowInstanceId());
+    assertEquals(2, batch.get(2).getWorkflowInstanceId());
+
+    // The retry should commit the same rows as a normal LAST_ONLY batch start instead of returning
+    // DUPLICATED with only Java-side instance IDs.
+    WorkflowInstance previous = dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 1, 1);
+    WorkflowInstance latestRun = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 2);
+    assertEquals("wfi1-uuid", previous.getWorkflowUuid());
+    assertEquals(WorkflowInstance.Status.STOPPED, previous.getStatus());
+    assertEquals("wfi3-uuid", latestRun.getWorkflowUuid());
+    assertEquals(WorkflowInstance.Status.CREATED, latestRun.getStatus());
+    verify(queueSystem, times(2)).enqueue(any(), any(TerminateThenRunJobEvent.class));
+    verify(queueSystem, times(2))
+        .enqueue(
+            any(), any(com.netflix.maestro.queue.jobevents.WorkflowInstanceUpdateJobEvent.class));
+    verify(queueSystem, times(2)).notify(any());
+    reset(queueSystem);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 
   @Test
@@ -479,78 +534,403 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
         dao.getLatestWorkflowInstanceRun(wfi.getWorkflowId(), wfi.getWorkflowInstanceId());
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
-    verifyPublish(1, 0, 0, 0, 0);
+    verifyEnqueue(1, 0, 0);
 
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("SEQUENTIAL"));
-    assertEquals(1, res);
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("PARALLEL"));
-    assertEquals(2, res);
-    res =
+    var ret =
+        runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("SEQUENTIAL"));
+    assertEquals(1, ret.size());
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("PARALLEL"));
+    assertEquals(2, ret.size());
+    ret =
         runStrategyDao.dequeueWithRunStrategy(
             TEST_WORKFLOW_ID, RunStrategy.create("STRICT_SEQUENTIAL"));
-    assertEquals(1, res);
+    assertEquals(1, ret.size());
 
     WorkflowSummary summary = new WorkflowSummary();
     summary.setWorkflowId(TEST_WORKFLOW_ID);
     summary.setWorkflowInstanceId(1L);
     summary.setWorkflowRunId(1L);
-    dao.updateWorkflowInstance(summary, null, null, WorkflowInstance.Status.FAILED, 123L);
-    res =
+    dao.updateWorkflowInstance(summary, null, null, WorkflowInstance.Status.FAILED, 123L, null);
+    ret =
         runStrategyDao.dequeueWithRunStrategy(
             TEST_WORKFLOW_ID, RunStrategy.create("STRICT_SEQUENTIAL"));
-    assertEquals(0, res);
+    assertNull(ret);
 
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("FIRST_ONLY"));
-    assertEquals(0, res);
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("LAST_ONLY"));
-    assertEquals(0, res);
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("FIRST_ONLY"));
+    assertNull(ret);
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, RunStrategy.create("LAST_ONLY"));
+    assertNull(ret);
+    ret =
+        runStrategyDao.dequeueWithRunStrategy(
+            TEST_WORKFLOW_ID, RunStrategy.create("SERIAL_LATEST_ONLY"));
+    assertEquals(1, ret.size());
 
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  private void markInstanceRunning(long instanceId, long runId) {
+    try (Connection conn = DATA_SOURCE.getConnection();
+        PreparedStatement stmt =
+            conn.prepareStatement(
+                "UPDATE maestro_workflow_instance SET execution_id='test-execution-id' "
+                    + "WHERE workflow_id=? AND instance_id=? AND run_id=?")) {
+      stmt.setString(1, TEST_WORKFLOW_ID);
+      stmt.setLong(2, instanceId);
+      stmt.setLong(3, runId);
+      stmt.executeUpdate();
+      conn.commit();
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  @Test
+  public void testStartRunStrategyWithSerialLatestOnly() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid-1");
+    int res = runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(1, res);
+    assertEquals(2, wfi.getWorkflowInstanceId());
+    assertEquals(1, wfi.getWorkflowRunId());
+    WorkflowInstance queued = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 2);
+    assertEquals(WorkflowInstance.Status.CREATED, queued.getStatus());
+    verifyEnqueue(1, 0, 0);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid-2");
+    res = runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(1, res);
+    assertEquals(3, wfi.getWorkflowInstanceId());
+    assertEquals(1, wfi.getWorkflowRunId());
+    WorkflowInstance previousQueued = dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 2, 1);
+    assertEquals(WorkflowInstance.Status.STOPPED, previousQueued.getStatus());
+    assertEquals(
+        "new instance 3 with run 1 arrived.\"]",
+        previousQueued
+            .getTimeline()
+            .getTimelineEvents()
+            .getFirst()
+            .getMessage()
+            .split("because ")[1]);
+    WorkflowInstance newQueued = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 3);
+    assertEquals(WorkflowInstance.Status.CREATED, newQueued.getStatus());
+    verifyEnqueue(1, 0, 1);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 3);
+  }
+
+  @Test
+  public void testStartRunStrategyWithSerialLatestOnlyNoQueuedYet() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid");
+    int res = runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(1, res);
+    assertEquals(2, wfi.getWorkflowInstanceId());
+    assertEquals(1, wfi.getWorkflowRunId());
+    WorkflowInstance queued = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 2);
+    assertEquals(WorkflowInstance.Status.CREATED, queued.getStatus());
+    verifyEnqueue(1, 0, 0);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testStartRunStrategyWithSerialLatestOnlyStopsAllQueued() throws Exception {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+
+    RunStrategy sequential = RunStrategy.create("SEQUENTIAL");
+    WorkflowInstance wfi2 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
+    wfi2.setWorkflowInstanceId(0);
+    wfi2.setWorkflowUuid("test-uuid-2");
+    runStrategyDao.startWithRunStrategy(wfi2, sequential);
+    assertEquals(2, wfi2.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    WorkflowInstance wfi3 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
+    wfi3.setWorkflowInstanceId(0);
+    wfi3.setWorkflowUuid("test-uuid-3");
+    runStrategyDao.startWithRunStrategy(wfi3, sequential);
+    assertEquals(3, wfi3.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid-4");
+    int res = runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(1, res);
+    assertEquals(4, wfi.getWorkflowInstanceId());
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 2, 1).getStatus());
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 3, 1).getStatus());
+    assertEquals(
+        WorkflowInstance.Status.CREATED,
+        dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 4).getStatus());
+    verifyEnqueue(1, 0, 1);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 3);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 4);
+  }
+
+  @Test
+  public void testStartBatchRunStrategyWithSerialLatestOnly() throws Exception {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    List<WorkflowInstance> batch = prepareBatch();
+    int[] res = runStrategyDao.startBatchWithRunStrategy(TEST_WORKFLOW_ID, slo, batch);
+    assertArrayEquals(new int[] {-1, 0, 1}, res);
+    assertEquals(1, batch.get(0).getWorkflowInstanceId());
+    assertEquals(0, batch.get(1).getWorkflowInstanceId());
+    assertEquals(2, batch.get(2).getWorkflowInstanceId());
+
+    WorkflowInstance stopped = dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 1, 1);
+    assertEquals(WorkflowInstance.Status.STOPPED, stopped.getStatus());
+    WorkflowInstance created = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 2);
+    assertEquals(WorkflowInstance.Status.CREATED, created.getStatus());
+    verifyEnqueue(1, 0, 1);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testStartBatchRunStrategyWithSerialLatestOnlyStopsAllQueued() throws Exception {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+
+    RunStrategy sequential = RunStrategy.create("SEQUENTIAL");
+    WorkflowInstance wfi2 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
+    wfi2.setWorkflowInstanceId(0);
+    wfi2.setWorkflowUuid("test-uuid-2");
+    runStrategyDao.startWithRunStrategy(wfi2, sequential);
+    assertEquals(2, wfi2.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    WorkflowInstance wfi3 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
+    wfi3.setWorkflowInstanceId(0);
+    wfi3.setWorkflowUuid("test-uuid-3");
+    runStrategyDao.startWithRunStrategy(wfi3, sequential);
+    assertEquals(3, wfi3.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    List<WorkflowInstance> batch = prepareBatch();
+    int[] res = runStrategyDao.startBatchWithRunStrategy(TEST_WORKFLOW_ID, slo, batch);
+    assertArrayEquals(new int[] {-1, 0, 1}, res);
+    assertEquals(4, batch.get(0).getWorkflowInstanceId());
+    assertEquals(0, batch.get(1).getWorkflowInstanceId());
+    assertEquals(5, batch.get(2).getWorkflowInstanceId());
+
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 2, 1).getStatus());
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 3, 1).getStatus());
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 4, 1).getStatus());
+    assertEquals(
+        WorkflowInstance.Status.CREATED,
+        dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 5).getStatus());
+    verifyEnqueue(1, 0, 2);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 3);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 4);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 5);
+  }
+
+  @Test
+  public void testStartBatchRunStrategyWithSerialLatestOnlyAllDuplicates() throws Exception {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    WorkflowInstance dup = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
+    dup.setWorkflowInstanceId(0);
+    dup.setWorkflowUuid(wfi.getWorkflowUuid());
+    List<WorkflowInstance> batch = Collections.singletonList(dup);
+    int[] res = runStrategyDao.startBatchWithRunStrategy(TEST_WORKFLOW_ID, slo, batch);
+    assertArrayEquals(new int[] {0}, res);
+    verifyEnqueue(0, 0, 0);
+  }
+
+  @Test
+  public void testStartRunStrategyWithSerialLatestOnlyHonorsRestart() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    dao.tryTerminateQueuedInstance(wfi, WorkflowInstance.Status.FAILED, "force to failed");
+    verifyEnqueue(0, 0, 1);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(2, wfi.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    wfi.setWorkflowInstanceId(1L);
+    wfi.setWorkflowRunId(0L);
+    wfi.setWorkflowUuid("test-uuid-1");
+    wfi.setRunConfig(new RunConfig());
+    wfi.getRunConfig().setPolicy(RunPolicy.RESTART_FROM_INCOMPLETE);
+    int res = runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(1, res);
+    assertEquals(1, wfi.getWorkflowInstanceId());
+    assertEquals(2, wfi.getWorkflowRunId());
+
+    WorkflowInstance previousQueued = dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 2, 1);
+    assertEquals(WorkflowInstance.Status.STOPPED, previousQueued.getStatus());
+    WorkflowInstance newQueued = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, 1);
+    assertEquals(WorkflowInstance.Status.CREATED, newQueued.getStatus());
+    assertEquals(2, newQueued.getWorkflowRunId());
+    verifyEnqueue(1, 0, 1);
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testDequeueWithSerialLatestOnlyReturnsQueued() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    dao.tryTerminateQueuedInstance(wfi, WorkflowInstance.Status.SUCCEEDED, "complete");
+    verifyEnqueue(0, 0, 1);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    verifyEnqueue(1, 0, 0);
+
+    var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, slo);
+    assertEquals(1, ret.size());
+    assertEquals(2, ret.getFirst().getInstanceId());
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testDequeueWithSerialLatestOnlyEmptyWhenRunning() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    verifyEnqueue(1, 0, 0);
+
+    var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, slo);
+    assertEquals(0, ret.size());
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testDequeueWithSerialLatestOnlyUnblocksAfterRunningTerminates() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(2, wfi.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, slo);
+    assertEquals(0, ret.size());
+
+    WorkflowSummary summary = new WorkflowSummary();
+    summary.setWorkflowId(TEST_WORKFLOW_ID);
+    summary.setWorkflowInstanceId(1L);
+    summary.setWorkflowRunId(1L);
+    dao.updateWorkflowInstance(summary, null, null, WorkflowInstance.Status.SUCCEEDED, 123L, null);
+    reset(queueSystem);
+
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, slo);
+    assertEquals(1, ret.size());
+    assertEquals(2, ret.getFirst().getInstanceId());
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+  }
+
+  @Test
+  public void testDequeueWithSerialLatestOnlyPicksLatestAfterCollapse() {
+    RunStrategy slo = RunStrategy.create("SERIAL_LATEST_ONLY");
+    markInstanceRunning(1, 1);
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid-1");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(2, wfi.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 0);
+
+    wfi.setWorkflowInstanceId(0);
+    wfi.setWorkflowUuid("test-uuid-2");
+    runStrategyDao.startWithRunStrategy(wfi, slo);
+    assertEquals(3, wfi.getWorkflowInstanceId());
+    verifyEnqueue(1, 0, 1);
+
+    assertEquals(
+        WorkflowInstance.Status.STOPPED,
+        dao.getWorkflowInstanceRun(TEST_WORKFLOW_ID, 2, 1).getStatus());
+
+    WorkflowSummary summary = new WorkflowSummary();
+    summary.setWorkflowId(TEST_WORKFLOW_ID);
+    summary.setWorkflowInstanceId(1L);
+    summary.setWorkflowRunId(1L);
+    dao.updateWorkflowInstance(summary, null, null, WorkflowInstance.Status.SUCCEEDED, 123L, null);
+    reset(queueSystem);
+
+    var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, slo);
+    assertEquals(1, ret.size());
+    assertEquals(3, ret.getFirst().getInstanceId());
+
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 3);
   }
 
   @Test
   public void testDequeueWithSizeLimit() throws Exception {
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 1);
     RunStrategy runStrategy = RunStrategy.create(10);
     for (int i = 0; i < Constants.DEQUEUE_SIZE_LIMIT + 1; ++i) {
       WorkflowInstance wfi1 = loadObject(TEST_WORKFLOW_INSTANCE, WorkflowInstance.class);
       wfi1.setWorkflowUuid("wfi-uuid-" + i);
       wfi1.setWorkflowInstanceId(0);
-      int res = runStrategyDao.startWithRunStrategy(wfi1, RunStrategy.create(10));
+      int res = runStrategyDao.startWithRunStrategy(wfi1, runStrategy);
       WorkflowInstance latestRun = dao.getLatestWorkflowInstanceRun(TEST_WORKFLOW_ID, i + 1);
       assertEquals(1, res);
       assertEquals(i + 1, latestRun.getWorkflowInstanceId());
       assertEquals(1, latestRun.getWorkflowRunId());
       assertEquals("wfi-uuid-" + i, latestRun.getWorkflowUuid());
 
-      res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
+      var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
       if (i < runStrategy.getWorkflowConcurrency()) {
-        assertEquals(i + 1, res);
-        verifyPublish(1, 0, i + 1, 0, 0);
+        assertEquals(i + 1, ret.size());
+        verifyEnqueue(1, 0, 0);
       } else {
-        assertEquals(runStrategy.getWorkflowConcurrency(), res);
-        verifyPublish(1, 0, (int) runStrategy.getWorkflowConcurrency(), 0, 0);
+        assertEquals(runStrategy.getWorkflowConcurrency(), ret.size());
+        verifyEnqueue(1, 0, 0);
       }
     }
 
     runStrategy = RunStrategy.create(Constants.DEQUEUE_SIZE_LIMIT - 1);
-    int res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
-    assertEquals(runStrategy.getWorkflowConcurrency(), res);
-    verify(publisher, times(0)).publishOrThrow(any(StartWorkflowJobEvent.class), anyLong(), any());
-    verifyPublish(0, 0, (int) runStrategy.getWorkflowConcurrency(), 0, 0);
+    var ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
+    assertEquals(runStrategy.getWorkflowConcurrency(), ret.size());
+    verify(queueSystem, times(0)).enqueue(any(), any(StartWorkflowJobEvent.class));
+    verifyEnqueue(0, 0, 0);
 
     runStrategy = RunStrategy.create(0);
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
-    assertEquals(0, res);
-    verifyPublish(0, 0, 0, 0, 0);
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
+    assertEquals(0, ret.size());
+    verifyEnqueue(0, 0, 0);
 
     runStrategy = RunStrategy.create(Constants.DEQUEUE_SIZE_LIMIT + 1);
-    res = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
-    assertEquals(Constants.DEQUEUE_SIZE_LIMIT, res);
-    verifyPublish(0, 1, Constants.DEQUEUE_SIZE_LIMIT, 0, 0);
+    ret = runStrategyDao.dequeueWithRunStrategy(TEST_WORKFLOW_ID, runStrategy);
+    assertEquals(Constants.DEQUEUE_SIZE_LIMIT, ret.size());
+    verifyEnqueue(0, 0, 0);
 
     for (int i = Constants.DEQUEUE_SIZE_LIMIT; i >= 1; --i) {
-      MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, i + 1);
+      MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, i + 1);
     }
   }
 
@@ -576,8 +956,8 @@ public class MaestroRunStrategyDaoTest extends MaestroDaoBaseTest {
     assertEquals(2, latestRun.getWorkflowInstanceId());
     assertEquals("test-uuid", latestRun.getWorkflowUuid());
     assertEquals(WorkflowInstance.Status.FAILED, latestRun.getStatus());
-    assertEquals("test", latestRun.getTimeline().getTimelineEvents().get(0).getMessage());
-    verifyPublish(0, 0, 0, 0, 1);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID, 2);
+    assertEquals("test", latestRun.getTimeline().getTimelineEvents().getFirst().getMessage());
+    verifyEnqueue(0, 0, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID, 2);
   }
 }

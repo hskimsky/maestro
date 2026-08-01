@@ -14,15 +14,15 @@ package com.netflix.maestro.models.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.netflix.maestro.models.definition.PropertiesSnapshot;
 import com.netflix.maestro.models.instance.WorkflowInstance;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import java.util.EnumMap;
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -33,7 +33,7 @@ import lombok.ToString;
  * is in non-terminal state), failed instance number (last run is in failed state), and the
  * latest_instance_id (indicating the total number of created instances for this workflow id).
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -53,6 +53,7 @@ import lombok.ToString;
 @Getter
 @ToString
 @EqualsAndHashCode
+@SuppressWarnings("PMD.LooseCoupling")
 public class WorkflowOverviewResponse {
   @Valid @NotNull private final String workflowId;
   private final Long activeVersionId;
@@ -65,7 +66,7 @@ public class WorkflowOverviewResponse {
   private final Long latestInstanceId;
 
   /** builder class for lombok and jackson. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   public static final class WorkflowOverviewResponseBuilder {}
 }

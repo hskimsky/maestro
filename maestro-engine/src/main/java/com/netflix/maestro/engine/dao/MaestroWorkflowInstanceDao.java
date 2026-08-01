@@ -13,21 +13,19 @@
 package com.netflix.maestro.engine.dao;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.netflix.conductor.cockroachdb.CockroachDBConfiguration;
-import com.netflix.conductor.cockroachdb.dao.CockroachDBBaseDAO;
+import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.annotations.SuppressFBWarnings;
 import com.netflix.maestro.annotations.VisibleForTesting;
+import com.netflix.maestro.database.AbstractDatabaseDao;
+import com.netflix.maestro.database.DatabaseConfiguration;
 import com.netflix.maestro.engine.db.ForeachIterationOverview;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
-import com.netflix.maestro.engine.jobevents.RunWorkflowInstancesJobEvent;
-import com.netflix.maestro.engine.jobevents.TerminateInstancesJobEvent;
-import com.netflix.maestro.engine.jobevents.WorkflowInstanceUpdateJobEvent;
-import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+import com.netflix.maestro.engine.steps.StepRuntime;
 import com.netflix.maestro.engine.utils.AggregatedViewHelper;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.exceptions.MaestroNotFoundException;
 import com.netflix.maestro.exceptions.MaestroRetryableError;
+import com.netflix.maestro.metrics.MaestroMetrics;
 import com.netflix.maestro.models.Actions;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.definition.User;
@@ -38,7 +36,15 @@ import com.netflix.maestro.models.instance.WorkflowRuntimeOverview;
 import com.netflix.maestro.models.timeline.Timeline;
 import com.netflix.maestro.models.timeline.TimelineEvent;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
+import com.netflix.maestro.queue.MaestroQueueSystem;
+import com.netflix.maestro.queue.jobevents.MaestroJobEvent;
+import com.netflix.maestro.queue.jobevents.StartWorkflowJobEvent;
+import com.netflix.maestro.queue.jobevents.TerminateThenRunJobEvent;
+import com.netflix.maestro.queue.jobevents.WorkflowInstanceUpdateJobEvent;
+import com.netflix.maestro.queue.models.InstanceRunUuid;
+import com.netflix.maestro.queue.models.MessageDto;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -46,11 +52,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
@@ -63,30 +70,39 @@ import lombok.extern.slf4j.Slf4j;
  */
 // mute the false positive error due to https://github.com/spotbugs/spotbugs/issues/293
 @SuppressFBWarnings("OBL_UNSATISFIED_OBLIGATION")
-@SuppressWarnings("PMD.AvoidLiteralsInIfCondition")
+@SuppressWarnings("PMD.ReplaceJavaUtilDate")
 @Slf4j
-public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
-  private static final String SINGLE_PLACE_HOLDER = "?,";
-  private static final String DOUBLE_PLACE_HOLDER = "?,?,";
-  private static final String QUAD_PLACE_HOLDER = "?,?,?,?,";
-  private static final String VALUE_PLACE_HOLDER = "(?,?)";
+public class MaestroWorkflowInstanceDao extends AbstractDatabaseDao {
+  private static final int PARAMS_PER_INSTANCE = 11;
+  private static final String VALUE_PLACE_HOLDER = "(?,?,?,?,?,?::jsonb,?,?,?,?::json,?)";
+  private static final String FROM_WORKFLOW_INSTANCE_TABLE = "FROM maestro_workflow_instance ";
 
   private static final String CREATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE =
-      "INSERT INTO maestro_workflow_instance (instance,status) VALUES %s "
-          + "ON CONFLICT (workflow_id,instance_id,run_id) DO NOTHING RETURNING instance_id";
+      "INSERT INTO maestro_workflow_instance "
+          + "(workflow_id,instance_id,run_id,uuid,correlation_id,initiator,"
+          + "root_depth,initiator_type,create_ts,instance,status) VALUES %s "
+          + "ON CONFLICT (workflow_id,instance_id,run_id) DO NOTHING "
+          + "RETURNING instance_id";
+
+  private static final String TERMINATE_QUEUED_WORKFLOW_PREFIX =
+      "UPDATE maestro_workflow_instance SET status = ?, end_ts = CURRENT_TIMESTAMP, "
+          + "modify_ts = CURRENT_TIMESTAMP, timeline = array_append(timeline, ?) WHERE workflow_id=? ";
 
   private static final String TERMINATE_QUEUED_INSTANCE_QUERY =
-      "UPDATE maestro_workflow_instance@primary SET (status,end_ts,modify_ts,timeline) "
-          + "= (?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,array_append(timeline,?)) "
-          + "WHERE workflow_id=? AND instance_id=? AND run_id=? AND status='CREATED' AND execution_id IS NULL";
+      TERMINATE_QUEUED_WORKFLOW_PREFIX
+          + "AND instance_id=? AND run_id=? AND status='CREATED' AND execution_id IS NULL";
+
+  private static final String INSTANCE_IN_SUBQUERY =
+      "(instance_id, run_id) IN (SELECT instance_id, run_id FROM maestro_workflow_instance WHERE workflow_id=? ";
 
   private static final String TERMINATE_QUEUED_INSTANCES_QUERY =
-      "UPDATE maestro_workflow_instance SET (status,end_ts,modify_ts,timeline) "
-          + "= (?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,array_append(timeline,?)) WHERE workflow_id=? "
-          + "AND status='CREATED' AND execution_id IS NULL LIMIT ? RETURNING instance";
+      TERMINATE_QUEUED_WORKFLOW_PREFIX
+          + "AND status='CREATED' AND execution_id IS NULL AND "
+          + INSTANCE_IN_SUBQUERY
+          + "AND status='CREATED' AND execution_id IS NULL LIMIT ?) RETURNING instance";
 
   private static final String GET_RUNNING_INSTANCES_QUERY_PREFIX =
-      "SELECT instance_id,run_id,uuid FROM maestro_workflow_instance@workflow_status_index ";
+      "SELECT instance_id,run_id,uuid FROM maestro_workflow_instance ";
 
   private static final String GET_RUNNING_CREATED_INSTANCES_QUERY =
       GET_RUNNING_INSTANCES_QUERY_PREFIX
@@ -98,33 +114,29 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
           + "WHERE workflow_id=? AND status='IN_PROGRESS' AND instance_id>? ORDER BY instance_id ASC LIMIT ?";
 
   private static final String UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE =
-      "UPDATE maestro_workflow_instance@primary SET (%s modify_ts) = (%s CURRENT_TIMESTAMP) "
+      "UPDATE maestro_workflow_instance SET %s modify_ts = CURRENT_TIMESTAMP "
           + "WHERE workflow_id=? AND instance_id=? AND run_id=? ";
 
   private static final String UPDATE_WORKFLOW_INSTANCE_START_QUERY =
       String.format(
           UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE,
-          "status,start_ts,runtime_overview,timeline,",
-          QUAD_PLACE_HOLDER);
+          "status = ?, start_ts = ?, runtime_overview = ?::jsonb, timeline = ?,");
 
   private static final String UPDATE_WORKFLOW_INSTANCE_END_QUERY =
       String.format(
           UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE,
-          "status,end_ts,runtime_overview,timeline,",
-          QUAD_PLACE_HOLDER);
+          "status = ?, end_ts = ?, runtime_overview = ?::jsonb, timeline = ?,");
 
   private static final String UPDATE_WORKFLOW_INSTANCE_TIMELINE_QUERY =
       String.format(
-          UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE,
-          "runtime_overview,timeline,",
-          DOUBLE_PLACE_HOLDER);
+          UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE, "runtime_overview = ?::jsonb, timeline = ?,");
 
   private static final String UPDATE_WORKFLOW_INSTANCE_EXECUTION_QUERY =
-      String.format(UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE, "execution_id,", SINGLE_PLACE_HOLDER)
+      String.format(UPDATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE, "execution_id = ?,")
           + " AND status='CREATED' AND execution_id IS NULL";
 
   private static final String GET_WORKFLOW_INSTANCE_FIELDS_TEMPLATE =
-      "SELECT %s FROM maestro_workflow_instance@primary WHERE workflow_id=? AND instance_id=? %s";
+      "SELECT %s FROM maestro_workflow_instance WHERE workflow_id=? AND instance_id=? %s";
 
   private static final String ALL_FIELDS =
       "instance,status,execution_id,start_ts,end_ts,modify_ts,runtime_overview,timeline ";
@@ -135,6 +147,10 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   private static final String GET_WORKFLOW_INSTANCE_QUERY =
       String.format(GET_WORKFLOW_INSTANCE_FIELDS_TEMPLATE, ALL_FIELDS, RUN_ID_CONDITION);
 
+  private static final String GET_WORKFLOW_INSTANCE_BY_UUID_QUERY =
+      String.format(
+          "SELECT %s FROM maestro_workflow_instance WHERE workflow_id=? AND uuid=?", ALL_FIELDS);
+
   private static final String GET_LATEST_WORKFLOW_INSTANCE_RUN_QUERY =
       String.format(GET_WORKFLOW_INSTANCE_FIELDS_TEMPLATE, ALL_FIELDS, LATEST_RUN_CONDITION);
 
@@ -144,50 +160,55 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   private static final String GET_LATEST_WORKFLOW_INSTANCE_STATUS_QUERY =
       String.format(GET_WORKFLOW_INSTANCE_FIELDS_TEMPLATE, STATUS_COLUMN, LATEST_RUN_CONDITION);
 
-  // note that this is a workaround as conductor does not support dedup key for idempotency.
-  private static final String GET_WORKFLOW_WITH_SAME_UUID_QUERY =
-      "SELECT 1 FROM workflow_instance@name_status_index WHERE workflow_name=? LIMIT 1";
+  private static final String GET_WORKFLOW_INSTANCE_RUNS_QUERY =
+      "SELECT "
+          + ALL_FIELDS
+          + FROM_WORKFLOW_INSTANCE_TABLE
+          + "WHERE workflow_id=? AND instance_id=? AND run_id>=? AND run_id<=? ORDER BY run_id DESC";
+
+  private static final String GET_MIN_MAX_RUN_IDS_QUERY =
+      "SELECT min(run_id) as min_run_id, max(run_id) as max_run_id "
+          + FROM_WORKFLOW_INSTANCE_TABLE
+          + "WHERE workflow_id=? AND instance_id=?";
 
   private static final String UPDATE_INSTANCE_FAILED_STATUS =
-      "UPDATE maestro_workflow_instance@workflow_status_index SET (status) = ('FAILED_2') "
+      "UPDATE maestro_workflow_instance SET status='FAILED_2' "
           + "WHERE workflow_id=? AND status='FAILED' AND instance_id>=? AND instance_id<=?";
 
   private static final String UNBLOCK_INSTANCE_FAILED_STATUS =
-      "UPDATE maestro_workflow_instance@primary SET (status,modify_ts,timeline) "
-          + "=('FAILED_1',CURRENT_TIMESTAMP,array_append(timeline,?)) "
+      "UPDATE maestro_workflow_instance SET status = 'FAILED_1', modify_ts = CURRENT_TIMESTAMP, "
+          + "timeline = array_append(timeline, ?) "
           + "WHERE workflow_id=? AND instance_id=? AND run_id=? AND status='FAILED'";
 
   private static final String UNBLOCK_INSTANCES_FAILED_STATUS =
-      "UPDATE maestro_workflow_instance@workflow_status_index SET "
-          + "(status,modify_ts,timeline)=('FAILED_1',CURRENT_TIMESTAMP,array_append(timeline,?)) "
-          + "WHERE workflow_id=? AND status='FAILED' order by instance_id ASC LIMIT ?";
+      "UPDATE maestro_workflow_instance SET "
+          + "status = 'FAILED_1', modify_ts = CURRENT_TIMESTAMP, timeline = array_append(timeline, ?) "
+          + "WHERE workflow_id=? AND status='FAILED' AND "
+          + INSTANCE_IN_SUBQUERY
+          + "AND status='FAILED' order by instance_id ASC LIMIT ?)";
 
-  private static final String FROM_FOREACH_WORKFLOW_INSTANCE_TABLE =
-      "FROM maestro_workflow_instance@foreach_index ";
+  private static final String FROM_INLINE_WORKFLOW_INSTANCE_TABLE = FROM_WORKFLOW_INSTANCE_TABLE;
 
   private static final String ORDER_BY_INSTANCE_ID_RUN_ID_DESC =
       "ORDER BY instance_id DESC, run_id DESC";
 
   private static final String GET_BATCH_LATEST_RUN_FOREACH_ITERATIONS_ROLLUP_QUERY =
       "SELECT DISTINCT ON (instance_id) instance_id as id, runtime_overview->'rollup_overview' as payload "
-          + FROM_FOREACH_WORKFLOW_INSTANCE_TABLE
+          + FROM_INLINE_WORKFLOW_INSTANCE_TABLE
           + "WHERE workflow_id=? AND instance_id=ANY(?) AND initiator_type='FOREACH' "
           + ORDER_BY_INSTANCE_ID_RUN_ID_DESC;
 
   private static final String GET_RUNNING_FOREACH_ITERATION_OVERVIEW_QUERY =
       "SELECT instance_id as id, status, runtime_overview->'rollup_overview' as payload "
-          + FROM_FOREACH_WORKFLOW_INSTANCE_TABLE
+          + FROM_INLINE_WORKFLOW_INSTANCE_TABLE
           + "WHERE workflow_id=? AND run_id=? AND instance_id>=? AND initiator_type='FOREACH' "
           + "ORDER BY instance_id DESC";
 
   private static final String GET_RESTARTING_FOREACH_ITERATION_OVERVIEW_QUERY =
-      "SELECT DISTINCT ON (instance_id) instance_id as id, status, runtime_overview->'rollup_overview' as payload "
-          + FROM_FOREACH_WORKFLOW_INSTANCE_TABLE
+      "SELECT DISTINCT ON (instance_id) instance_id as id,run_id,status,runtime_overview->'rollup_overview' as payload "
+          + FROM_INLINE_WORKFLOW_INSTANCE_TABLE
           + "WHERE workflow_id=? AND run_id>? AND instance_id>=? AND initiator_type='FOREACH' "
           + ORDER_BY_INSTANCE_ID_RUN_ID_DESC;
-
-  private static final String FROM_WORKFLOW_INSTANCE_TABLE =
-      "FROM maestro_workflow_instance@primary ";
 
   private static final String MIN_INSTANCE_ID = "min_instance_id";
   private static final String MAX_INSTANCE_ID = "max_instance_id";
@@ -199,7 +220,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
           + " ";
 
   private static final String GET_LARGEST_FOREACH_RUN_ID_QUERY =
-      "SELECT run_id as id FROM maestro_workflow_instance@foreach_index "
+      "SELECT run_id as id FROM maestro_workflow_instance "
           + "WHERE workflow_id=? AND initiator_type='FOREACH' ORDER BY run_id DESC LIMIT 1";
 
   private static final String GET_MIN_MAX_WORKFLOW_INSTANCE_IDS_QUERY =
@@ -217,11 +238,25 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
       "SELECT 1 FROM maestro_workflow_instance WHERE workflow_id=? LIMIT 1";
 
   private static final String INSTANCE_ID_COLUMN = "instance_id";
+  private static final String RUN_ID_COLUMN = "run_id";
+  private static final String START_TS_COLUMN = "start_ts";
+  private static final String END_TS_COLUMN = "end_ts";
+  private static final String MIN_RUN_ID = "min_run_id";
+  private static final String MAX_RUN_ID = "max_run_id";
+  private static final String INSTANCE_COLUMN = "instance";
+  private static final String INSTANCE_COLUMN_NOT_NULL_ERR =
+      "workflow instance column cannot be null";
 
   private static final String TERMINATION_MESSAGE_TEMPLATE =
       "Workflow instance status becomes [%s] due to reason [%s]";
 
-  private final MaestroJobEventPublisher publisher;
+  private static final String GET_BATCH_LATEST_RUN_WHILE_ITERATIONS_ROLLUP_QUERY =
+      "SELECT DISTINCT ON (instance_id) instance_id, runtime_overview->'rollup_overview' as payload "
+          + FROM_INLINE_WORKFLOW_INSTANCE_TABLE
+          + "WHERE workflow_id=? AND instance_id>=? AND instance_id<? "
+          + ORDER_BY_INSTANCE_ID_RUN_ID_DESC;
+
+  private final MaestroQueueSystem queueSystem;
 
   /**
    * Constructor for Maestro workflow instance DAO.
@@ -233,10 +268,11 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   public MaestroWorkflowInstanceDao(
       DataSource dataSource,
       ObjectMapper objectMapper,
-      CockroachDBConfiguration config,
-      MaestroJobEventPublisher publisher) {
-    super(dataSource, objectMapper, config);
-    this.publisher = publisher;
+      DatabaseConfiguration config,
+      MaestroQueueSystem queueSystem,
+      MaestroMetrics metrics) {
+    super(dataSource, objectMapper, config, metrics);
+    this.queueSystem = queueSystem;
   }
 
   private void updateInstances(List<WorkflowInstance> instances) {
@@ -249,56 +285,58 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   /**
    * The instance list has already been sized to fit into the batch size limit. max insertion is 10.
    *
-   * <p>Have to build batch query because executeBatch won't work in this case, which is mentioned
-   * in https://github.com/cockroachdb/docs/issues/3578#issuecomment-415881382
+   * <p>It explicitly builds a batch query because executeBatch won't work in some cases
    */
-  private int[] insertMaestroWorkflowInstances(Connection conn, List<WorkflowInstance> instances)
+  @SuppressWarnings({"PMD.UseVarargs", "PMD.AvoidInstantiatingObjectsInLoops"})
+  private Set<Long> insertMaestroWorkflowInstances(
+      Connection conn,
+      List<WorkflowInstance> instances,
+      List<String> instanceStrs,
+      TerminateThenRunJobEvent jobEvent,
+      MessageDto[] message)
       throws SQLException {
     String sql =
         String.format(
             CREATE_WORKFLOW_INSTANCE_QUERY_TEMPLATE,
             String.join(",", Collections.nCopies(instances.size(), VALUE_PLACE_HOLDER)));
     try (PreparedStatement wfiStmt = conn.prepareStatement(sql)) {
-      int idx = 0;
-      for (WorkflowInstance instance : instances) {
-        wfiStmt.setString(++idx, toJson(instance));
-        wfiStmt.setString(++idx, instance.getStatus().name());
+      for (int i = 0; i < instances.size(); ++i) {
+        int baseIdx = i * PARAMS_PER_INSTANCE;
+        int pos = 0;
+        wfiStmt.setString(++pos + baseIdx, instances.get(i).getWorkflowId());
+        wfiStmt.setLong(++pos + baseIdx, instances.get(i).getWorkflowInstanceId());
+        wfiStmt.setLong(++pos + baseIdx, instances.get(i).getWorkflowRunId());
+        wfiStmt.setString(++pos + baseIdx, instances.get(i).getWorkflowUuid());
+        wfiStmt.setString(++pos + baseIdx, instances.get(i).getCorrelationId());
+        wfiStmt.setString(++pos + baseIdx, toJson(instances.get(i).getInitiator()));
+        wfiStmt.setLong(++pos + baseIdx, instances.get(i).getInitiator().getDepth());
+        wfiStmt.setString(++pos + baseIdx, instances.get(i).getInitiator().getType().name());
+        wfiStmt.setTimestamp(++pos + baseIdx, new Timestamp(instances.get(i).getCreateTime()));
+        wfiStmt.setString(++pos + baseIdx, instanceStrs.get(i));
+        wfiStmt.setString(++pos + baseIdx, instances.get(i).getStatus().name());
       }
       try (ResultSet result = wfiStmt.executeQuery()) {
-        int[] res = new int[instances.size()];
-        idx = 0;
+        Set<Long> res = new HashSet<>(instances.size());
         while (result.next()) {
-          res[idx++] = result.getInt(1);
+          res.add(result.getLong(1));
         }
-        return res;
+        if (!res.isEmpty()) {
+          List<InstanceRunUuid> instanceRunUuids = new ArrayList<>(res.size());
+          for (WorkflowInstance instance : instances) {
+            if (res.contains(instance.getWorkflowInstanceId())) {
+              instanceRunUuids.add(
+                  new InstanceRunUuid(
+                      instance.getWorkflowInstanceId(),
+                      instance.getWorkflowRunId(),
+                      instance.getWorkflowUuid()));
+            }
+          }
+          jobEvent.setRunAfter(instanceRunUuids);
+          message[0] = queueSystem.enqueue(conn, jobEvent);
+        }
+        return res; // the inserted instance id
       }
     }
-  }
-
-  private int publishRunInstancesJobEvents(
-      String workflowId, List<WorkflowInstance> instances, int batchSize) {
-    RunWorkflowInstancesJobEvent startInstances = RunWorkflowInstancesJobEvent.init(workflowId);
-    int idx = 0;
-    for (WorkflowInstance instance : instances) {
-      startInstances.addOneRun(
-          instance.getWorkflowInstanceId(),
-          instance.getWorkflowRunId(),
-          instance.getWorkflowUuid());
-      idx++;
-      if (idx % batchSize == 0) {
-        publishRunInstancesJobEvent(startInstances);
-      }
-    }
-    if (startInstances.size() > 0) {
-      publishRunInstancesJobEvent(startInstances);
-    }
-    return idx;
-  }
-
-  private void publishRunInstancesJobEvent(RunWorkflowInstancesJobEvent startInstances) {
-    publisher.publishOrThrow(
-        startInstances, "Failed sending job events to run workflow instances, will retry.");
-    startInstances.getInstanceRunUuids().clear();
   }
 
   /**
@@ -311,23 +349,27 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
    */
   public boolean tryTerminateQueuedInstance(
       WorkflowInstance instance, WorkflowInstance.Status status, String reason) {
-    return withMetricLogError(
-        () ->
-            withRetryableTransaction(
-                conn -> {
-                  int res = terminateQueuedInstance(conn, instance, status, reason);
-                  if (res == SUCCESS_WRITE_SIZE) {
-                    publisher.publishOrThrow(
-                        WorkflowInstanceUpdateJobEvent.create(
-                            instance, status, System.currentTimeMillis()),
-                        "Failed sending job events when terminating queued instance");
-                    return true;
-                  }
-                  return false;
-                }),
-        "tryTerminateQueuedInstance",
-        "Failed to terminate the queued workflow instance {}",
-        instance.getIdentity());
+    MessageDto[] message = new MessageDto[1];
+    var ret =
+        withMetricLogError(
+            () ->
+                withRetryableTransaction(
+                    conn -> {
+                      int res = terminateQueuedInstance(conn, instance, status, reason);
+                      if (res == SUCCESS_WRITE_SIZE) {
+                        WorkflowInstanceUpdateJobEvent jobEvent =
+                            WorkflowInstanceUpdateJobEvent.create(
+                                instance, status, System.currentTimeMillis());
+                        message[0] = queueSystem.enqueue(conn, jobEvent);
+                        return true;
+                      }
+                      return false;
+                    }),
+            "tryTerminateQueuedInstance",
+            "Failed to terminate the queued workflow instance {}",
+            instance.getIdentity());
+    queueSystem.notify(message[0]);
+    return ret;
   }
 
   private int terminateQueuedInstance(
@@ -347,7 +389,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   }
 
   /**
-   * Terminate queued workflow instances run if feasible. Otherwise, do nothing.
+   * Terminate queued workflow instances run if possible. Otherwise, do nothing.
    *
    * @param workflowId workflow id to terminate
    * @param limit the size limit to terminate
@@ -360,39 +402,42 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
     TimelineEvent timelineEvent =
         TimelineLogEvent.warn(TERMINATION_MESSAGE_TEMPLATE, status.name(), reason);
     String timelineEventStr = toJson(timelineEvent);
-    return withMetricLogError(
-        () ->
-            withRetryableTransaction(
-                conn -> {
-                  List<WorkflowInstance> stoppedInstances = new ArrayList<>();
-                  try (PreparedStatement stmt =
-                      conn.prepareStatement(TERMINATE_QUEUED_INSTANCES_QUERY)) {
-                    int idx = 0;
-                    stmt.setString(++idx, status.name());
-                    stmt.setString(++idx, timelineEventStr);
-                    stmt.setString(++idx, workflowId);
-                    stmt.setInt(++idx, limit);
-                    try (ResultSet result = stmt.executeQuery()) {
-                      while (result.next()) {
-                        WorkflowInstance instance =
-                            fromJson(result.getString(1), WorkflowInstance.class);
-                        stoppedInstances.add(instance);
+    MessageDto[] message = new MessageDto[1];
+    int ret =
+        withMetricLogError(
+            () ->
+                withRetryableTransaction(
+                    conn -> {
+                      List<WorkflowInstance> stoppedInstances = new ArrayList<>();
+                      try (PreparedStatement stmt =
+                          conn.prepareStatement(TERMINATE_QUEUED_INSTANCES_QUERY)) {
+                        int idx = 0;
+                        stmt.setString(++idx, status.name());
+                        stmt.setString(++idx, timelineEventStr);
+                        stmt.setString(++idx, workflowId);
+                        stmt.setString(++idx, workflowId);
+                        stmt.setInt(++idx, limit);
+                        try (ResultSet result = stmt.executeQuery()) {
+                          while (result.next()) {
+                            WorkflowInstance instance =
+                                fromJson(result.getString(1), WorkflowInstance.class);
+                            stoppedInstances.add(instance);
+                          }
+                        }
+                        if (!stoppedInstances.isEmpty()) {
+                          WorkflowInstanceUpdateJobEvent jobEvent =
+                              WorkflowInstanceUpdateJobEvent.create(
+                                  stoppedInstances, status, System.currentTimeMillis());
+                          message[0] = queueSystem.enqueue(conn, jobEvent);
+                        }
                       }
-                    }
-                    if (!stoppedInstances.isEmpty()) {
-                      WorkflowInstanceUpdateJobEvent jobEvent =
-                          WorkflowInstanceUpdateJobEvent.create(
-                              stoppedInstances, status, System.currentTimeMillis());
-                      publisher.publishOrThrow(
-                          jobEvent,
-                          "Failed sending an update job event to notify stopping workflow instances.");
-                    }
-                  }
-                  return stoppedInstances.size();
-                }),
-        "terminateQueuedInstances",
-        "Failed to terminate the queued workflow instances for workflow {}",
-        workflowId);
+                      return stoppedInstances.size();
+                    }),
+            "terminateQueuedInstances",
+            "Failed to terminate the queued workflow instances for workflow {}",
+            workflowId);
+    queueSystem.notify(message[0]);
+    return ret;
   }
 
   /**
@@ -418,8 +463,8 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
               int stoppedRunning = 0;
               int stopped = limit;
               while (stopped == limit) {
-                TerminateInstancesJobEvent jobEvent =
-                    TerminateInstancesJobEvent.init(workflowId, action, caller, reason);
+                TerminateThenRunJobEvent jobEvent =
+                    TerminateThenRunJobEvent.init(workflowId, action, caller, reason);
                 withRetryableQuery(
                     sql,
                     wfiStmt -> {
@@ -432,7 +477,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                       while (result.next()) {
                         jobEvent.addOneRun(
                             result.getLong(INSTANCE_ID_COLUMN),
-                            result.getLong("run_id"),
+                            result.getLong(RUN_ID_COLUMN),
                             result.getString("uuid"));
                       }
                       return null;
@@ -440,8 +485,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                 stopped = jobEvent.size();
                 stoppedRunning += stopped;
                 if (stopped > 0) {
-                  publisher.publishOrThrow(
-                      jobEvent, "Failed to send terminate job event for workflow " + workflowId);
+                  queueSystem.enqueueOrThrow(jobEvent);
                   lastInstanceId.set(
                       jobEvent.getInstanceRunUuids().get(stopped - 1).getInstanceId());
                 }
@@ -452,40 +496,47 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   }
 
   /**
-   * Create a list of new workflow instance runs (with run_id = 1) in DB. It will skip if an
+   * Create a list of new workflow instance runs (with run_id already set) in DB. It will skip if an
    * instance id is duplicated and fail if the instance uuid is duplicated, The instance list has
    * already been sized to fit into the batch size limit.
    *
    * @param workflowId workflow id
    * @param instances the list of workflow instances to create
-   * @return the optional error details
+   * @return the created workflow instance ids
    */
   public Optional<Details> runWorkflowInstances(
-      String workflowId, List<WorkflowInstance> instances, int batchSize) {
+      String workflowId, List<WorkflowInstance> instances) {
     Checks.checkTrue(
         !ObjectHelper.isCollectionEmptyOrNull(instances),
         "cannot run null or empty workflow instances for %s",
         workflowId);
     updateInstances(instances);
+    List<String> instanceStrs = instances.stream().map(this::toJson).toList();
+    var jobEvent =
+        TerminateThenRunJobEvent.init(
+            workflowId,
+            Actions.WorkflowInstanceAction.STOP,
+            StepRuntime.SYSTEM_USER,
+            "Run workflow instance");
+    MessageDto[] message = new MessageDto[1];
     try {
-      int[] res =
+      Set<Long> ret =
           withRetryableTransaction(
               conn -> {
                 tryUpdateAncestorRunsStatus(
                     conn,
                     workflowId,
-                    instances.get(0).getWorkflowInstanceId(),
-                    instances.get(instances.size() - 1));
-                return insertMaestroWorkflowInstances(conn, instances);
+                    instances.getFirst().getWorkflowInstanceId(),
+                    instances.getLast());
+                return insertMaestroWorkflowInstances(
+                    conn, instances, instanceStrs, jobEvent, message);
               });
-      LOG.debug(
-          "Created workflow instances {} for workflow_id [{}]", Arrays.toString(res), workflowId);
-      int cnt = publishRunInstancesJobEvents(workflowId, instances, batchSize);
+      LOG.debug("Created workflow instances {} for workflow_id [{}]", ret, workflowId);
+      queueSystem.notify(message[0]);
       LOG.info(
-          "Created {}/{} workflow instances and sent {} run job events for workflow id {}",
-          res.length,
+          "Created [{}]/[{}] workflow instances for workflow id [{}]",
+          ret.size(),
           instances.size(),
-          cnt,
           workflowId);
       return Optional.empty();
     } catch (MaestroInternalError error) { // non-retryable error
@@ -495,7 +546,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
     } catch (RuntimeException e) {
       LOG.warn(
           "Failed to create workflow instance batch (starting at {}) for workflow [{}] due to",
-          instances.get(0).getWorkflowInstanceId(),
+          instances.getFirst().getWorkflowInstanceId(),
           workflowId,
           e);
       return Optional.of(
@@ -525,57 +576,77 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   /** Try to unblock failed workflow instance by set its status to FAILED_1. */
   public boolean tryUnblockFailedWorkflowInstance(
       String workflowId, long workflowInstanceId, long workflowRunId, TimelineEvent event) {
+    var jobEvent = StartWorkflowJobEvent.create(workflowId);
+    String eventStr = toJson(event);
+    MessageDto[] message = new MessageDto[1];
     int updated =
         withMetricLogError(
             () ->
-                withRetryableUpdate(
-                    UNBLOCK_INSTANCE_FAILED_STATUS,
-                    stmt -> {
-                      int idx = 0;
-                      stmt.setString(++idx, toJson(event));
-                      stmt.setString(++idx, workflowId);
-                      stmt.setLong(++idx, workflowInstanceId);
-                      stmt.setLong(++idx, workflowRunId);
+                withRetryableTransaction(
+                    conn -> {
+                      try (PreparedStatement stmt =
+                          conn.prepareStatement(UNBLOCK_INSTANCE_FAILED_STATUS)) {
+                        int idx = 0;
+                        stmt.setString(++idx, eventStr);
+                        stmt.setString(++idx, workflowId);
+                        stmt.setLong(++idx, workflowInstanceId);
+                        stmt.setLong(++idx, workflowRunId);
+                        int res = stmt.executeUpdate();
+                        if (res == SUCCESS_WRITE_SIZE) {
+                          message[0] = queueSystem.enqueue(conn, jobEvent);
+                        }
+                        return res;
+                      }
                     }),
             "tryUnblockFailedWorkflowInstance",
             "Failed to try to unblock the failed workflow instance [{}][{}][{}]",
             workflowId,
             workflowInstanceId,
             workflowRunId);
+    queueSystem.notify(message[0]);
     return updated == SUCCESS_WRITE_SIZE;
   }
 
   /**
    * Try to unblock failed workflow instances for a given workflow id by set their status to
-   * FAILED_1.
+   * FAILED_1. It does the batch update. If there is any update, it will send a start workflow job
+   * event within the last batch update. It is possible that the update the failed in the middle and
+   * the caller should retry.
    */
-  public int tryUnblockFailedWorkflowInstances(String workflowId, int limit, TimelineEvent event) {
-    return withMetricLogError(
-        () ->
-            withRetryableUpdate(
-                UNBLOCK_INSTANCES_FAILED_STATUS,
-                stmt -> {
-                  int idx = 0;
-                  stmt.setString(++idx, toJson(event));
-                  stmt.setString(++idx, workflowId);
-                  stmt.setInt(++idx, limit);
-                }),
-        "tryUnblockFailedWorkflowInstances",
-        "Failed to try to unblock the failed workflow instances for workflow id[{}]",
-        workflowId);
-  }
-
-  /** Used to get if there is any conductor workflow instance with this maestro workflow uuid. */
-  public boolean existWorkflowWithSameUuid(String uuid) {
-    return withMetricLogError(
-        () ->
-            withRetryableQuery(
-                GET_WORKFLOW_WITH_SAME_UUID_QUERY,
-                stmt -> stmt.setString(1, uuid),
-                ResultSet::next),
-        "existWorkflowWithSameUuid",
-        "Failed to check the existence of the workflow instance for uuid [{}]",
-        uuid);
+  public int tryUnblockFailedWorkflowInstances(
+      String workflowId, int batchLimit, TimelineEvent event) {
+    var jobEvent = StartWorkflowJobEvent.create(workflowId);
+    String eventStr = toJson(event);
+    MessageDto[] message = new MessageDto[1];
+    int[] totalUnblocked = new int[] {0};
+    int unblocked = batchLimit;
+    while (unblocked == batchLimit) {
+      unblocked =
+          withMetricLogError(
+              () ->
+                  withRetryableTransaction(
+                      conn -> {
+                        try (PreparedStatement stmt =
+                            conn.prepareStatement(UNBLOCK_INSTANCES_FAILED_STATUS)) {
+                          int idx = 0;
+                          stmt.setString(++idx, eventStr);
+                          stmt.setString(++idx, workflowId);
+                          stmt.setString(++idx, workflowId);
+                          stmt.setInt(++idx, batchLimit);
+                          int res = stmt.executeUpdate();
+                          if (res < batchLimit && totalUnblocked[0] + res > 0) {
+                            message[0] = queueSystem.enqueue(conn, jobEvent);
+                          }
+                          return res;
+                        }
+                      }),
+              "tryUnblockFailedWorkflowInstances",
+              "Failed to try to unblock the failed workflow instances for workflow id[{}]",
+              workflowId);
+      totalUnblocked[0] += unblocked;
+    }
+    queueSystem.notify(message[0]);
+    return totalUnblocked[0];
   }
 
   /**
@@ -591,14 +662,16 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
       WorkflowSummary summary,
       WorkflowRuntimeOverview overview,
       Timeline timeline,
-      WorkflowInstance.Status status,
-      long markTime) {
+      @Nullable WorkflowInstance.Status status,
+      long markTime,
+      @Nullable MaestroJobEvent jobEvent) {
     try {
       String sqlQuery = deriveSqlQuery(status);
       final String[] timelineArray =
           timeline == null
               ? null
               : timeline.getTimelineEvents().stream().map(this::toJson).toArray(String[]::new);
+      MessageDto[] message = new MessageDto[1];
       int updated =
           withRetryableTransaction(
               conn -> {
@@ -613,7 +686,11 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                   stmt.setString(++idx, summary.getWorkflowId());
                   stmt.setLong(++idx, summary.getWorkflowInstanceId());
                   stmt.setLong(++idx, summary.getWorkflowRunId());
-                  return stmt.executeUpdate();
+                  int ret = stmt.executeUpdate();
+                  if (ret == SUCCESS_WRITE_SIZE && jobEvent != null) {
+                    message[0] = queueSystem.enqueue(conn, jobEvent);
+                  }
+                  return ret;
                 }
               });
       if (updated != SUCCESS_WRITE_SIZE) {
@@ -622,6 +699,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                 "ERROR: updated [%s] (expecting 1) rows for workflow instance %s",
                 updated, summary.getIdentity()));
       }
+      queueSystem.notify(message[0]);
       return Optional.empty();
     } catch (RuntimeException e) {
       return Optional.of(
@@ -640,7 +718,6 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   }
 
   /** Mark the execution id for idempotency. */
-  @SuppressWarnings({"PMD.AvoidCatchingNPE"})
   public Optional<Details> executeWorkflowInstance(WorkflowSummary summary, String executionId) {
     try {
       int updated =
@@ -693,7 +770,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
    */
   public Optional<Details> updateRuntimeOverview(
       WorkflowSummary summary, WorkflowRuntimeOverview overview, Timeline timeline) {
-    return updateWorkflowInstance(summary, overview, timeline, null, 0);
+    return updateWorkflowInstance(summary, overview, timeline, null, 0, null);
   }
 
   /**
@@ -759,6 +836,40 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   }
 
   /**
+   * Get the instance of a specific workflow instance run by the workflow id and workflow uuid,
+   * including the summary of its step instances.
+   *
+   * @param workflowId workflow id
+   * @param uuid workflow uuid
+   */
+  public WorkflowInstance getWorkflowInstanceRunByUuid(String workflowId, String uuid) {
+    WorkflowInstance ret =
+        withMetricLogError(
+            () ->
+                withRetryableQuery(
+                    GET_WORKFLOW_INSTANCE_BY_UUID_QUERY,
+                    stmt -> {
+                      stmt.setString(1, workflowId);
+                      stmt.setString(2, uuid);
+                    },
+                    result -> {
+                      if (result.next()) {
+                        return workflowInstanceFromResult(result);
+                      }
+                      return null;
+                    }),
+            "getWorkflowInstanceRunByUuid",
+            "Failed to get the workflow instance for [{}][{}]",
+            workflowId,
+            uuid);
+    if (ret == null) {
+      throw new MaestroNotFoundException(
+          "workflow instance [%s][%s] not found (either not created or deleted)", workflowId, uuid);
+    }
+    return ret;
+  }
+
+  /**
    * Get the instance data of the latest workflow instance run for a specific workflow instance,
    * including the summary of its step instances.
    *
@@ -767,6 +878,76 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
    */
   public WorkflowInstance getLatestWorkflowInstanceRun(String workflowId, long workflowInstanceId) {
     return getWorkflowInstanceRun(workflowId, workflowInstanceId, Constants.LATEST_ONE);
+  }
+
+  /**
+   * Get runs for a specific workflow instance within a run id range, ordered by run id ascending.
+   *
+   * @param workflowId workflow id
+   * @param workflowInstanceId workflow instance id
+   * @param startRunId start run id (inclusive)
+   * @param endRunId end run id (inclusive)
+   * @return list of workflow instances ordered by run id descending
+   */
+  public List<WorkflowInstance> getWorkflowInstanceRuns(
+      String workflowId, long workflowInstanceId, long startRunId, long endRunId) {
+    return withMetricLogError(
+        () ->
+            withRetryableQuery(
+                GET_WORKFLOW_INSTANCE_RUNS_QUERY,
+                stmt -> {
+                  int idx = 0;
+                  stmt.setString(++idx, workflowId);
+                  stmt.setLong(++idx, workflowInstanceId);
+                  stmt.setLong(++idx, startRunId);
+                  stmt.setLong(++idx, endRunId);
+                },
+                result -> {
+                  List<WorkflowInstance> runs = new ArrayList<>();
+                  while (result.next()) {
+                    runs.add(workflowInstanceFromResult(result));
+                  }
+                  return runs;
+                }),
+        "getWorkflowInstanceRuns",
+        "Failed to get workflow instance runs for [{}][{}]",
+        workflowId,
+        workflowInstanceId);
+  }
+
+  /**
+   * Gets the min and max run id for a specific workflow instance.
+   *
+   * @param workflowId workflow id
+   * @param workflowInstanceId workflow instance id
+   * @return a long array of length 2 where the first element is the min run id and the second is
+   *     the max run id, or null if no runs exist
+   */
+  public long[] getMinMaxRunIds(String workflowId, long workflowInstanceId) {
+    return withMetricLogError(
+        () ->
+            withRetryableQuery(
+                GET_MIN_MAX_RUN_IDS_QUERY,
+                stmt -> {
+                  int idx = 0;
+                  stmt.setString(++idx, workflowId);
+                  stmt.setLong(++idx, workflowInstanceId);
+                },
+                result -> {
+                  if (result.next()) {
+                    long min = result.getLong(MIN_RUN_ID);
+                    long max = result.getLong(MAX_RUN_ID);
+                    if (min == 0 && max == 0) {
+                      return null;
+                    }
+                    return new long[] {min, max};
+                  }
+                  return null;
+                }),
+        "getMinMaxRunIds",
+        "Failed to get the min and max run ids for [{}][{}]",
+        workflowId,
+        workflowInstanceId);
   }
 
   /**
@@ -845,12 +1026,12 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   private WorkflowInstance workflowInstanceFromResult(ResultSet rs) throws SQLException {
     WorkflowInstance instance =
         Checks.notNull(
-            getJsonObjectIfPresent(rs, "instance", WorkflowInstance.class),
-            "workflow instance column cannot be null");
+            getJsonObjectIfPresent(rs, INSTANCE_COLUMN, WorkflowInstance.class),
+            INSTANCE_COLUMN_NOT_NULL_ERR);
     instance.setStatus(WorkflowInstance.Status.create(rs.getString(STATUS_COLUMN)));
     instance.setExecutionId(rs.getString("execution_id"));
-    instance.setStartTime(getTimestampIfPresent(rs, "start_ts"));
-    instance.setEndTime(getTimestampIfPresent(rs, "end_ts"));
+    instance.setStartTime(getTimestampIfPresent(rs, START_TS_COLUMN));
+    instance.setEndTime(getTimestampIfPresent(rs, END_TS_COLUMN));
     instance.setModifyTime(getTimestampIfPresent(rs, "modify_ts"));
     instance.setRuntimeOverview(
         getJsonObjectIfPresent(rs, "runtime_overview", WorkflowRuntimeOverview.class));
@@ -870,13 +1051,17 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
   private Timeline getTimelineIfPresent(ResultSet rs) throws SQLException {
     Array payload = rs.getArray("timeline");
     if (payload != null) {
-      String[] json = (String[]) payload.getArray();
-      if (json != null) {
-        Timeline timeline = new Timeline(null);
-        for (String event : json) {
-          timeline.add(fromJson(event, TimelineEvent.class));
+      try {
+        String[] json = (String[]) payload.getArray();
+        if (json != null) {
+          Timeline timeline = new Timeline(null);
+          for (String event : json) {
+            timeline.add(fromJson(event, TimelineEvent.class));
+          }
+          return timeline;
         }
-        return timeline;
+      } finally {
+        payload.free();
       }
     }
     return null;
@@ -962,12 +1147,12 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
    * stats using follower read mode.
    *
    * @param workflowId workflow id
-   * @return the aggregated stats (status, count) for non-terminal and failed workflow instances.
+   * @return the list of ForeachIterationOverview since the checkpoint. For the restart case, the
+   *     result also includes the latest run_id of the restarted iteration.
    */
   @SuppressWarnings({"PMD.AvoidInstantiatingObjectsInLoops"})
   public List<ForeachIterationOverview> getForeachIterationOverviewWithCheckpoint(
       String workflowId, long runId, long checkpoint, boolean isRestarting) {
-    List<ForeachIterationOverview> overviews = new ArrayList<>();
     return withMetricLogError(
         () ->
             withRetryableQuery(
@@ -981,6 +1166,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                   stmt.setLong(++idx, checkpoint);
                 },
                 result -> {
+                  List<ForeachIterationOverview> overviews = new ArrayList<>();
                   while (result.next()) {
                     long instanceId = result.getLong(ID_COLUMN);
                     WorkflowInstance.Status status =
@@ -991,7 +1177,11 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                       rollup =
                           fromJson(result.getString(PAYLOAD_COLUMN), WorkflowRollupOverview.class);
                     }
-                    overviews.add(new ForeachIterationOverview(instanceId, status, rollup));
+                    var overview = new ForeachIterationOverview(instanceId, status, rollup);
+                    if (isRestarting) {
+                      overview.setRunId(result.getLong(2));
+                    }
+                    overviews.add(overview);
                   }
                   return overviews;
                 }),
@@ -1011,11 +1201,8 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
    * @param instanceIds the workflow instance ids for iterations we want to query
    * @return a list of workflow rollups.
    */
-  @SuppressWarnings({"PMD.AvoidInstantiatingObjectsInLoops"})
   public List<WorkflowRollupOverview> getBatchForeachLatestRunRollupForIterations(
       String workflowId, List<Long> instanceIds) {
-    List<WorkflowRollupOverview> rollups = new ArrayList<>();
-
     return withMetricLogError(
         () ->
             withRetryableTransaction(
@@ -1025,18 +1212,7 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
                     stmt.setString(1, workflowId);
                     stmt.setArray(2, conn.createArrayOf("INT8", instanceIds.toArray(new Long[0])));
                     try (ResultSet result = stmt.executeQuery()) {
-                      while (result.next()) {
-                        String payload = result.getString(PAYLOAD_COLUMN);
-                        if (payload != null) {
-                          WorkflowRollupOverview rollup =
-                              fromJson(
-                                  result.getString(PAYLOAD_COLUMN), WorkflowRollupOverview.class);
-                          if (rollup != null) {
-                            rollups.add(rollup);
-                          }
-                        }
-                      }
-                      return rollups;
+                      return getWorkflowRollupOverviews(result);
                     }
                   }
                 }),
@@ -1081,5 +1257,47 @@ public class MaestroWorkflowInstanceDao extends CockroachDBBaseDAO {
         "existWorkflowIdInInstances",
         "Failed to check the existence of the workflow instance for workflow id [{}]",
         workflowId);
+  }
+
+  /**
+   * Get rollups of the latest runs of while loop inline workflow instances.
+   *
+   * @param workflowId while loop inline workflow id
+   * @param startId the minimal workflow instance id for iterations (inclusive)
+   * @param endId the maximal workflow instance id for iterations (exclusive)
+   * @return a list of workflow rollups.
+   */
+  public List<WorkflowRollupOverview> getBatchWhileLatestRunRollupForIterations(
+      String workflowId, long startId, long endId) {
+    return withMetricLogError(
+        () ->
+            withRetryableQuery(
+                GET_BATCH_LATEST_RUN_WHILE_ITERATIONS_ROLLUP_QUERY,
+                stmt -> {
+                  int idx = 0;
+                  stmt.setString(++idx, workflowId);
+                  stmt.setLong(++idx, startId);
+                  stmt.setLong(++idx, endId);
+                },
+                this::getWorkflowRollupOverviews),
+        "getBatchWhileLatestRunRollupForIterations",
+        "Failed to get rollups of the latest while inline instances for inline workflow id [{}]",
+        workflowId);
+  }
+
+  private List<WorkflowRollupOverview> getWorkflowRollupOverviews(ResultSet result)
+      throws SQLException {
+    List<WorkflowRollupOverview> rollups = new ArrayList<>();
+    while (result.next()) {
+      String payload = result.getString(PAYLOAD_COLUMN);
+      if (payload != null) {
+        WorkflowRollupOverview rollup =
+            fromJson(result.getString(PAYLOAD_COLUMN), WorkflowRollupOverview.class);
+        if (rollup != null) {
+          rollups.add(rollup);
+        }
+      }
+    }
+    return rollups;
   }
 }

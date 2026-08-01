@@ -14,7 +14,7 @@ package com.netflix.maestro.models.parameter;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -24,7 +24,7 @@ import lombok.Getter;
 import lombok.experimental.SuperBuilder;
 
 /** BOOLEAN Parameter instance. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -44,10 +44,13 @@ import lombok.experimental.SuperBuilder;
 @SuperBuilder(toBuilder = true)
 @EqualsAndHashCode(callSuper = true)
 public final class BooleanParameter extends AbstractParameter {
+  private static final String TRUE = "true";
+  private static final String FALSE = "false";
+
   private final Boolean value;
   private Boolean evaluatedResult;
 
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   static final class BooleanParameterBuilderImpl
       extends BooleanParameterBuilder<BooleanParameter, BooleanParameterBuilderImpl> {
@@ -69,9 +72,9 @@ public final class BooleanParameter extends AbstractParameter {
     if (result instanceof String) {
       this.getMeta()
           .put("warn", "Implicitly converted the evaluated result to a boolean for type String");
-      if ("true".equalsIgnoreCase((String) result)) {
+      if (TRUE.equalsIgnoreCase((String) result)) {
         this.evaluatedResult = Boolean.TRUE;
-      } else if ("false".equalsIgnoreCase((String) result)) {
+      } else if (FALSE.equalsIgnoreCase((String) result)) {
         this.evaluatedResult = Boolean.FALSE;
       } else {
         throw new IllegalArgumentException(

@@ -34,7 +34,13 @@ public class MaestroInterceptorMvcConfig implements WebMvcConfigurer {
   /** register customized interceptor. */
   @Override
   public void addInterceptors(InterceptorRegistry registry) {
-    registry.addInterceptor(userInfoInterceptor).addPathPatterns("/api/v3/workflows/**");
+    registry
+        .addInterceptor(userInfoInterceptor)
+        .addPathPatterns(
+            "/api/v3/workflows/**",
+            "/api/v3/groups/**",
+            "/api/v3/tag-permits/**",
+            "/api/v3/job-templates/**");
   }
 
   /** create request scope bean for caller. */

@@ -13,33 +13,39 @@
 package com.netflix.maestro.server.handlers;
 
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.exceptions.MaestroBadRequestException;
 import com.netflix.maestro.exceptions.MaestroDryRunException;
 import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.exceptions.MaestroInvalidStatusException;
 import com.netflix.maestro.exceptions.MaestroRuntimeException;
 import com.netflix.maestro.models.error.Details;
+import com.netflix.maestro.utils.ObjectHelper;
+import jakarta.validation.ValidationException;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
-import javax.validation.ValidationException;
+import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.method.ParameterErrors;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /** Global exception handler for all REST controllers. */
 @Slf4j
 @ControllerAdvice
+@SuppressWarnings("PMD.LooseCoupling")
 public class MaestroRestExceptionHandler extends ResponseEntityExceptionHandler {
   private static final HttpHeaders EMPTY_HEADER = new HttpHeaders();
+  private static final String EMPTY_SPACE = " ";
 
   @ExceptionHandler({MaestroRuntimeException.class})
   protected ResponseEntity<Object> handleMaestroRuntimeException(
@@ -102,13 +108,30 @@ public class MaestroRestExceptionHandler extends ResponseEntityExceptionHandler 
   protected ResponseEntity<Object> handleMethodArgumentNotValid(
       MethodArgumentNotValidException e,
       HttpHeaders headers,
-      HttpStatus status,
+      HttpStatusCode status,
       WebRequest request) {
     LOG.info("Handle MethodArgumentNotValidException with a message: {}", e.getMessage());
     List<String> errors =
         e.getBindingResult().getFieldErrors().stream()
-            .map(error -> error.getField() + " " + error.getDefaultMessage())
-            .collect(Collectors.toList());
+            .map(error -> error.getField() + EMPTY_SPACE + error.getDefaultMessage())
+            .toList();
+    return buildDetailedResponse(e, errors, headers, request);
+  }
+
+  @Override
+  protected ResponseEntity<Object> handleHandlerMethodValidationException(
+      HandlerMethodValidationException e,
+      HttpHeaders headers,
+      HttpStatusCode status,
+      WebRequest request) {
+    LOG.info("Handle HandlerMethodValidationException with a message: {}", e.getMessage());
+    List<String> errors =
+        e.getBeanResults().stream()
+            .map(ParameterErrors::getFieldErrors)
+            .flatMap(List::stream)
+            .filter(Objects::nonNull)
+            .map(error -> error.getField() + EMPTY_SPACE + error.getDefaultMessage())
+            .toList();
     return buildDetailedResponse(e, errors, headers, request);
   }
 
@@ -116,7 +139,7 @@ public class MaestroRestExceptionHandler extends ResponseEntityExceptionHandler 
   protected ResponseEntity<Object> handleHttpMessageNotReadable(
       HttpMessageNotReadableException e,
       HttpHeaders headers,
-      HttpStatus status,
+      HttpStatusCode status,
       WebRequest request) {
     LOG.info("Handle HttpMessageNotReadableException with a message: {}", e.getMessage());
     return buildDetailedResponse(e, Collections.emptyList(), headers, request);
@@ -135,7 +158,11 @@ public class MaestroRestExceptionHandler extends ResponseEntityExceptionHandler 
     if (!ObjectHelper.isCollectionEmptyOrNull(errors)) {
       details.errors(errors);
     }
-    return handleExceptionInternal(e, details.build(), headers, status, request);
+    HttpHeaders jsonHeaders = new HttpHeaders();
+    jsonHeaders.putAll(headers);
+    // Always return errors as JSON regardless of request Content-Type for consistent API behavior
+    jsonHeaders.setContentType(MediaType.APPLICATION_JSON);
+    return handleExceptionInternal(e, details.build(), jsonHeaders, status, request);
   }
 
   private ResponseEntity<Object> buildDetailedResponse(

@@ -16,7 +16,7 @@ import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.definition.GitInfo;
@@ -24,13 +24,13 @@ import com.netflix.maestro.models.definition.Properties;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.validations.PropertiesConstraint;
 import com.netflix.maestro.validations.WorkflowConstraint;
+import jakarta.validation.Valid;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import javax.validation.Valid;
 import lombok.Data;
 
 /** Request to create a workflow definition. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"properties", "workflow", "is_active", "git_info"},

@@ -19,17 +19,19 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.annotation.JsonSetter;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.definition.Alerting;
+import com.netflix.maestro.models.definition.DefaultAlerting;
 import java.io.Serializable;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import lombok.Data;
 
 /** Workflow {@link Alerting} configurations per alert type. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(alphabetic = true)
 @Data
@@ -41,7 +43,7 @@ public class AlertingTypeConfig implements Serializable {
   private Set<String> pagerduties;
 
   @JsonProperty("slack")
-  private Alerting.SlackConfig slackConfig;
+  private DefaultAlerting.SlackConfig slackConfig;
 
   @JsonIgnore private Set<Action> actions;
   private boolean disabled;
@@ -68,7 +70,7 @@ public class AlertingTypeConfig implements Serializable {
   @JsonSetter("actions")
   public void deserializeActions(final Set<String> actionsStr) {
     if (actionsStr != null && !actionsStr.isEmpty()) {
-      actions = new HashSet<>();
+      actions = EnumSet.noneOf(Action.class);
       actionsStr.forEach(s -> actions.add(Action.valueOf(s.toUpperCase(Locale.US))));
     }
   }

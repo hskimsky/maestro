@@ -16,23 +16,23 @@ import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.definition.TagList;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.validations.MaestroReferenceIdConstraint;
 import com.netflix.maestro.validations.TagListConstraint;
+import jakarta.validation.Valid;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import javax.validation.Valid;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.SuperBuilder;
 
 /** Abstract parameter instance. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @Getter
 @SuperBuilder(toBuilder = true)
 @EqualsAndHashCode

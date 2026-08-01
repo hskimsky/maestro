@@ -39,18 +39,28 @@ import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.junit.After;
 import org.junit.AfterClass;
+import org.junit.Before;
 import org.junit.BeforeClass;
+import org.mockito.MockitoAnnotations;
 
 /** Maestro test base class. */
-@SuppressWarnings({"VisibilityModifier", "PMD.UseVarargs"})
+@SuppressWarnings({
+  "VisibilityModifier",
+  "PMD.UseVarargs",
+  "PMD.TestClassWithoutTestCases",
+  "PMD.LooseCoupling"
+})
 public class MaestroBaseTest {
   protected static final ObjectMapper MAPPER;
+  protected static final ObjectMapper YAML_MAPPER;
 
   protected MaestroBaseTest() {}
 
   static {
     MAPPER = JsonHelper.objectMapper();
+    YAML_MAPPER = JsonHelper.objectMapperWithYaml();
   }
 
   /** start up. */
@@ -60,6 +70,18 @@ public class MaestroBaseTest {
   /** clean up. */
   @AfterClass
   public static void destroy() {}
+
+  private AutoCloseable closeable;
+
+  @Before
+  public void openMocks() {
+    closeable = MockitoAnnotations.openMocks(this);
+  }
+
+  @After
+  public void releaseMocks() throws Exception {
+    closeable.close();
+  }
 
   protected <T> T loadObject(String fileName, Class<T> clazz) throws IOException {
     return MAPPER.readValue(loadJson(fileName), clazz);

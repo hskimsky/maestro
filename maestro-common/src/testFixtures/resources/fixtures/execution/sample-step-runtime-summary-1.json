@@ -4,6 +4,7 @@
   "step_instance_id": 123,
   "step_attempt_id": 2,
   "step_instance_uuid": "bar",
+  "type": "subworkflow",
   "step_run_params": {
     "foo": {
       "value": "bar",
@@ -58,60 +59,25 @@
         "total_step_count": 1
       },
       "type": "SUBWORKFLOW"
-    },
-    "maestro_foreach": {
-      "foreach_workflow_id": "inline-wf",
-      "foreach_identity": "foo",
-      "total_loop_count": 10,
-      "next_loop_index": 0,
-      "foreach_overview": {
-        "checkpoint": 6,
-        "stats": {
-          "CREATED": 5,
-          "SUCCEEDED": 1
-        }
-      },
-      "type": "FOREACH"
     }
   },
-  "dependencies": {
-    "SIGNAL": {
-      "type": "SIGNAL",
-      "statuses": [
-        {
-          "params": {
-            "value": {
-              "name": {
-                "value": "signal/a/1",
-                "type": "STRING"
-              },
-              "_step_dependency_sub_type": {
-                "value": "input_signal",
-                "type": "STRING"
-              },
-              "foo": {
-                "parameter": {
-                  "value": "bar",
-                  "type": "STRING"
-                },
-                "operator": "=",
-                "type": "SIGNAL"
-              }
-            },
-            "type": "MAP",
-            "evaluated_result": {
-              "name": "signal/a/1",
-              "foo": "bar"
-            },
-            "evaluated_time": 1617728847801
+  "signal_dependencies": {
+    "dependencies": [
+      {
+        "name": "signal/a/1",
+        "status": "MATCHED",
+        "match_params": {
+          "_step_dependency_sub_type": {
+            "value": "input_signal",
+            "operator": "="
           },
-          "signal_reference": {
-            "signal_instance_id": "fake_signal_id",
-            "timestamp": 1617728849086
-          },
-          "status": "MATCHED"
-        }
-      ]
-    }
+          "foo": {
+            "value": "bar",
+            "operator": "="
+          }
+        },
+        "signal_id": 849086
+      }
+    ]
   }
 }

@@ -16,18 +16,18 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.utils.Checks;
+import jakarta.validation.constraints.NotNull;
 import java.util.Locale;
-import javax.validation.constraints.NotNull;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 
 /** Workflow run strategy, which applies to the whole workflow across all versions. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"rule", "workflow_concurrency"},
@@ -71,7 +71,14 @@ public class RunStrategy {
      * PARALLEL: run all triggered workflows in parallel constrained by the workflow concurrency
      * setting.
      */
-    PARALLEL;
+    PARALLEL,
+    /**
+     * SERIAL_LATEST_ONLY: run workflow instances one at a time. When a new instance arrives, any
+     * existing queued instance is stopped eagerly so only the new arrival is queued. When the
+     * running instance reaches a terminal state, the single queued instance is dequeued to run. The
+     * running instance is never terminated by a new arrival.
+     */
+    SERIAL_LATEST_ONLY;
 
     /** Static creator. */
     @JsonCreator

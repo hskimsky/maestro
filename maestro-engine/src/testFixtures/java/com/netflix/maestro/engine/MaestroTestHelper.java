@@ -24,8 +24,10 @@ public final class MaestroTestHelper {
   private static final String DELETE_MAESTRO_WORKFLOW_QUERY =
       "WITH deleted_wf AS ("
           + "DELETE FROM maestro_workflow WHERE workflow_id=? RETURNING *)"
-          + "INSERT INTO maestro_workflow_deleted (workflow, timeline, stage) "
-          + "SELECT row_to_json(deleted_wf), ARRAY['the workflow is deleted by unit test'], 'DELETION_DONE' FROM deleted_wf";
+          + "INSERT INTO maestro_workflow_deleted "
+          + "(workflow_id, internal_id, workflow, timeline, stage) "
+          + "SELECT workflow_id, internal_id, row_to_json(deleted_wf), "
+          + "ARRAY['the workflow is deleted by unit test'], 'DELETION_DONE' FROM deleted_wf";
 
   // deletion function for unit tests and integration tests
   public static int removeWorkflow(DataSource dataSource, String workflowId) {
@@ -111,6 +113,26 @@ public final class MaestroTestHelper {
       updateWorkflowInstanceOverview.setString(1, workflowId);
       updateWorkflowInstanceOverview.setLong(2, workflowInstanceId);
       removedCount += updateWorkflowInstanceOverview.executeUpdate();
+      conn.commit();
+      return removedCount;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  // deletion function for job templates in unit tests and integration tests
+  public static int removeJobTemplate(DataSource dataSource, String jobType, String tag) {
+    try (Connection conn = dataSource.getConnection();
+        PreparedStatement removeJobTemplate =
+            conn.prepareStatement(
+                tag != null
+                    ? "DELETE FROM maestro_job_template WHERE job_type=? AND tag=?"
+                    : "DELETE FROM maestro_job_template WHERE job_type=?")) {
+      removeJobTemplate.setString(1, jobType);
+      if (tag != null) {
+        removeJobTemplate.setString(2, tag);
+      }
+      int removedCount = removeJobTemplate.executeUpdate();
       conn.commit();
       return removedCount;
     } catch (Exception e) {

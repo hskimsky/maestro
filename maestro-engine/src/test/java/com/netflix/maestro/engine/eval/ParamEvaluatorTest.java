@@ -28,7 +28,6 @@ import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.exceptions.MaestroInvalidExpressionException;
 import com.netflix.maestro.exceptions.MaestroUnprocessableEntityException;
 import com.netflix.maestro.models.Constants;
-import com.netflix.maestro.models.definition.StepDependencyType;
 import com.netflix.maestro.models.parameter.BooleanParameter;
 import com.netflix.maestro.models.parameter.LongArrayParameter;
 import com.netflix.maestro.models.parameter.LongParameter;
@@ -37,8 +36,6 @@ import com.netflix.maestro.models.parameter.MapParameter;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.ParamMode;
 import com.netflix.maestro.models.parameter.Parameter;
-import com.netflix.maestro.models.parameter.SignalOperator;
-import com.netflix.maestro.models.parameter.SignalParamDefinition;
 import com.netflix.maestro.models.parameter.StringArrayParameter;
 import com.netflix.maestro.models.parameter.StringParamDefinition;
 import com.netflix.maestro.models.parameter.StringParameter;
@@ -315,6 +312,21 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
   }
 
   @Test
+  public void testParseStepParameterWithCustomSeparator() {
+    ParamEvaluator customEvaluator = new ParamEvaluator(evaluator, MAPPER, "___");
+    StringParameter bar =
+        StringParameter.builder().name("bar").expression("step1___foo + '-1';").build();
+    customEvaluator.parseStepParameter(
+        Collections.emptyMap(),
+        Collections.emptyMap(),
+        Collections.singletonMap(
+            "foo", StringParameter.builder().evaluatedResult("123").evaluatedTime(123L).build()),
+        bar,
+        "step1");
+    assertEquals("123-1", bar.getEvaluatedResult());
+  }
+
+  @Test
   public void testParseStepParameterUsingParamsToGetWorkflowParams() {
     StringParameter bar =
         StringParameter.builder().name("bar").expression("params.get('foo') + '-1'").build();
@@ -360,7 +372,7 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     AssertHelper.assertThrows(
         "cannot find a step id or signal instance",
         MaestroInvalidExpressionException.class,
-        "Expression evaluation throws an exception",
+        "Failed to evaluate the param with a definition: [step2__foo]",
         () ->
             paramEvaluator.parseStepParameter(
                 Collections.singletonMap("step1", Collections.emptyMap()),
@@ -439,7 +451,7 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     when(mockInstanceWrapper.isWorkflowParam()).thenReturn(false);
     when(mockInstanceWrapper.getStepInstanceAttributes()).thenReturn(mockStepAttributes);
 
-    paramExtensionRepo.reset(Collections.emptyMap(), Collections.emptyMap(), mockInstanceWrapper);
+    paramExtensionRepo.reset(Collections.emptyMap(), null, mockInstanceWrapper);
     paramEvaluator.parseStepParameter(
         Collections.emptyMap(),
         Collections.emptyMap(),
@@ -580,20 +592,15 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal ${step1__foo}").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(
-                StringParamDefinition.builder().name("bar").value("test ${step1__foo}").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").value("test ${step1__foo}").build());
     MapParamDefinition mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     MapParameter mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test 123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal 123", mapParameter.getEvaluatedParam("name").getEvaluatedResultString());
@@ -602,39 +609,31 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal ${foo}").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").value("test ${foo}").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").value("test ${foo}").build());
+
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test 123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
 
     paramDefMap = new LinkedHashMap<>();
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal123").build());
-    paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").value("test12").build())
-            .build());
+    paramDefMap.put("bar", StringParamDefinition.builder().name("bar").value("test12").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test12", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());
@@ -643,41 +642,30 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").expression("'signal' + foo").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(
-                StringParamDefinition.builder().name("bar").expression("'test' + foo").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").expression("'test' + foo").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonMap(StepDependencyType.SIGNAL, Collections.singletonList(mapParameter))
-            .values(),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());
 
     paramDefMap = new LinkedHashMap<>();
     paramDefMap.put("name", StringParamDefinition.builder().name("name").expression("foo").build());
-    paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").expression("foo").build())
-            .build());
+    paramDefMap.put("bar", StringParamDefinition.builder().name("bar").expression("foo").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());
@@ -689,20 +677,15 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal ${step1__foo}").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(
-                StringParamDefinition.builder().name("bar").value("test ${step1__foo}").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").value("test ${step1__foo}").build());
     MapParamDefinition mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     MapParameter mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test 123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal 123", mapParameter.getEvaluatedParam("name").getEvaluatedResultString());
@@ -711,39 +694,30 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal ${foo}").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").value("test ${foo}").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").value("test ${foo}").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test 123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
 
     paramDefMap = new LinkedHashMap<>();
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").value("signal123").build());
-    paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").value("test12").build())
-            .build());
+    paramDefMap.put("bar", StringParamDefinition.builder().name("bar").value("test12").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test12", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());
@@ -752,40 +726,31 @@ public class ParamEvaluatorTest extends MaestroEngineBaseTest {
     paramDefMap.put(
         "name", StringParamDefinition.builder().name("name").expression("'signal' + foo").build());
     paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(
-                StringParamDefinition.builder().name("bar").expression("'test' + foo").build())
-            .build());
+        "bar", StringParamDefinition.builder().name("bar").expression("'test' + foo").build());
+
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("test123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("signal123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());
 
     paramDefMap = new LinkedHashMap<>();
     paramDefMap.put("name", StringParamDefinition.builder().name("name").expression("foo").build());
-    paramDefMap.put(
-        "bar",
-        SignalParamDefinition.builder()
-            .operator(SignalOperator.EQUALS_TO)
-            .parameter(StringParamDefinition.builder().name("bar").expression("foo").build())
-            .build());
+    paramDefMap.put("bar", StringParamDefinition.builder().name("bar").expression("foo").build());
     mapParamDefinition = MapParamDefinition.builder().value(paramDefMap).build();
     mapParameter = (MapParameter) mapParamDefinition.toParameter();
 
-    paramEvaluator.evaluateStepDependenciesOrOutputsParameters(
+    paramEvaluator.evaluateSignalDependenciesOrOutputsParameters(
         Collections.emptyMap(),
         Collections.emptyMap(),
         Collections.singletonMap("foo", StringParameter.builder().name("foo").value("123").build()),
-        Collections.singletonList(Collections.singletonList(mapParameter)),
+        Collections.singletonList(mapParameter),
         "step1");
     assertEquals("123", mapParameter.getEvaluatedParam("bar").getEvaluatedResult());
     assertEquals("123", mapParameter.getEvaluatedParam("name").getEvaluatedResult());

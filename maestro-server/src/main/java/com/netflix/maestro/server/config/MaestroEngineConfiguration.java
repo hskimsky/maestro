@@ -22,33 +22,40 @@ import com.netflix.maestro.engine.dao.MaestroWorkflowInstanceDao;
 import com.netflix.maestro.engine.eval.ExprEvaluator;
 import com.netflix.maestro.engine.eval.MaestroParamExtensionRepo;
 import com.netflix.maestro.engine.eval.ParamEvaluator;
+import com.netflix.maestro.engine.handlers.StepInstanceActionHandler;
 import com.netflix.maestro.engine.handlers.WorkflowActionHandler;
 import com.netflix.maestro.engine.handlers.WorkflowInstanceActionHandler;
 import com.netflix.maestro.engine.metrics.MaestroMetricRepo;
 import com.netflix.maestro.engine.params.DefaultParamManager;
 import com.netflix.maestro.engine.params.ParamsManager;
-import com.netflix.maestro.engine.utils.TriggerSubscriptionClient;
 import com.netflix.maestro.engine.utils.WorkflowHelper;
 import com.netflix.maestro.engine.validations.DryRunValidator;
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.server.properties.DefaultParamsProperties;
 import com.netflix.maestro.server.properties.MaestroProperties;
 import com.netflix.maestro.server.properties.StepRuntimeProperties;
 import com.netflix.maestro.utils.JsonHelper;
+import com.netflix.maestro.utils.StepParamSeparator;
 import com.netflix.spectator.api.DefaultRegistry;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.DependsOn;
 import org.springframework.context.annotation.Primary;
 
+/** beans for maestro engine related classes. */
 @Configuration
 @Slf4j
-@EnableCaching
-@EnableConfigurationProperties({MaestroProperties.class, StepRuntimeProperties.class})
+@EnableConfigurationProperties({
+  MaestroProperties.class,
+  StepRuntimeProperties.class,
+  DefaultParamsProperties.class
+})
 public class MaestroEngineConfiguration {
   private static final String OBJECT_MAPPER_WITH_YAML_QUALIFIER = "ObjectMapperWithYaml";
 
@@ -96,6 +103,15 @@ public class MaestroEngineConfiguration {
   }
 
   @Bean
+  public StepInstanceActionHandler stepInstanceActionHandler(
+      MaestroWorkflowInstanceDao instanceDao,
+      MaestroStepInstanceActionDao actionDao,
+      WorkflowInstanceActionHandler actionHandler) {
+    LOG.info("Creating maestro stepInstanceActionHandler within Spring boot...");
+    return new StepInstanceActionHandler(instanceDao, actionDao, actionHandler);
+  }
+
+  @Bean
   @ConditionalOnProperty(
       value = "maestro.redis.enabled",
       havingValue = "false",
@@ -105,21 +121,31 @@ public class MaestroEngineConfiguration {
     return InstanceStepConcurrencyHandler.NOOP_CONCURRENCY_HANDLER;
   }
 
-  @Bean
-  public TriggerSubscriptionClient triggerSubscriptionClient() {
-    LOG.info("Creating noop triggerSubscriptionClient within Spring boot...");
-    return (workflow, current, previous) ->
-        LOG.info(
-            "[NoOp] upsert a new trigger subscription [{}] for workflow [{}]",
-            current,
-            workflow.getId());
-  }
-
   @Bean(initMethod = "init")
   public DefaultParamManager defaultParamManager(
-      @Qualifier(OBJECT_MAPPER_WITH_YAML_QUALIFIER) ObjectMapper objectMapper) {
+      @Qualifier(OBJECT_MAPPER_WITH_YAML_QUALIFIER) ObjectMapper objectMapper,
+      DefaultParamsProperties defaultParamsProperties) {
     LOG.info("Creating DefaultParamManager within Spring boot...");
-    return new DefaultParamManager(objectMapper);
+    return new DefaultParamManager(objectMapper, toParamOverrides(defaultParamsProperties));
+  }
+
+  private static Map<String, String> toParamOverrides(DefaultParamsProperties properties) {
+    Map<String, String> overrides = new HashMap<>();
+    if (properties.getWorkflow() != null) {
+      overrides.put(DefaultParamManager.WORKFLOW_OVERRIDE_KEY, properties.getWorkflow());
+    }
+    if (properties.getStep() != null) {
+      overrides.put(DefaultParamManager.STEP_OVERRIDE_KEY, properties.getStep());
+    }
+    if (properties.getDryRun() != null) {
+      overrides.put(DefaultParamManager.DRY_RUN_OVERRIDE_KEY, properties.getDryRun());
+    }
+    if (properties.getByType() != null) {
+      properties
+          .getByType()
+          .forEach((type, blob) -> overrides.put(type.toLowerCase(Locale.US), blob));
+    }
+    return overrides;
   }
 
   @Bean
@@ -139,7 +165,6 @@ public class MaestroEngineConfiguration {
   }
 
   @Bean(initMethod = "postConstruct", destroyMethod = "preDestroy")
-  @DependsOn({"lockProvider"})
   public ExprEvaluator exprEvaluator(
       MaestroProperties properties, MaestroParamExtensionRepo extensionRepo) {
     LOG.info("Creating maestro exprEvaluator within Spring boot...");
@@ -147,10 +172,18 @@ public class MaestroEngineConfiguration {
   }
 
   @Bean
+  public StepParamSeparator stepParamSeparator(MaestroProperties properties) {
+    LOG.info("Creating maestro stepParamSeparator within Spring boot...");
+    return properties.getParamEvaluator();
+  }
+
+  @Bean
   public ParamEvaluator paramEvaluatorHelper(
       ExprEvaluator exprEvaluator,
-      @Qualifier(Constants.MAESTRO_QUALIFIER) ObjectMapper objectMapper) {
+      @Qualifier(Constants.MAESTRO_QUALIFIER) ObjectMapper objectMapper,
+      MaestroProperties properties) {
     LOG.info("Creating maestro parameterHelper within Spring boot...");
-    return new ParamEvaluator(exprEvaluator, objectMapper);
+    return new ParamEvaluator(
+        exprEvaluator, objectMapper, properties.getParamEvaluator().getStepParamSeparator());
   }
 }

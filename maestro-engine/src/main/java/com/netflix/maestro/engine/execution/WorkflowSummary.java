@@ -15,13 +15,13 @@ package com.netflix.maestro.engine.execution;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.annotations.Nullable;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.definition.Criticality;
+import com.netflix.maestro.models.definition.Step;
 import com.netflix.maestro.models.definition.StepTransition;
 import com.netflix.maestro.models.definition.Tag;
 import com.netflix.maestro.models.definition.TagList;
@@ -31,20 +31,21 @@ import com.netflix.maestro.models.instance.RunPolicy;
 import com.netflix.maestro.models.instance.RunProperties;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.Parameter;
+import com.netflix.maestro.utils.ObjectHelper;
 import com.netflix.maestro.validations.TagListConstraint;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import javax.validation.Valid;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
  * Workflow instance summary created just before the start of execution, it includes the necessary
  * info (e.g. evaluated workflow parameters and injected workflow tags) needed at runtime.
  */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -55,6 +56,7 @@ import lombok.Data;
       "workflow_instance_id",
       "workflow_run_id",
       "correlation_id",
+      "group_info",
       "creation_time",
       "workflow_uuid",
       "run_policy",
@@ -64,6 +66,7 @@ import lombok.Data;
       "params",
       "tags",
       "runtime_dag",
+      "step_map",
       "criticality",
       "instance_step_concurrency"
     },
@@ -80,6 +83,7 @@ public class WorkflowSummary {
   private long workflowInstanceId;
   private long workflowRunId;
   private String correlationId;
+  private long groupInfo;
   private Long creationTime;
   @NotNull private String workflowUuid;
 
@@ -103,6 +107,7 @@ public class WorkflowSummary {
   @Valid @TagListConstraint private TagList tags;
 
   private Map<String, StepTransition> runtimeDag; // actual dag used.
+  private Map<String, Step> stepMap; // all steps in the full dag.
 
   @Nullable private Criticality criticality;
 

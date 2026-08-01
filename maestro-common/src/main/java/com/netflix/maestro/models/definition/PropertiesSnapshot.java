@@ -14,7 +14,7 @@ package com.netflix.maestro.models.definition;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -22,9 +22,9 @@ import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.validations.MaestroIdConstraint;
 import com.netflix.maestro.validations.TagListConstraint;
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -37,9 +37,8 @@ import lombok.ToString;
  *
  * <p>Properties changes are kept separately and can evolve independently in Maestro.
  */
-@SuppressWarnings("PMD.MissingStaticMethodInNonInstantiatableClass") // false positive with lombok
 @JsonDeserialize(builder = PropertiesSnapshot.PropertiesSnapshotBuilder.class)
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -83,7 +82,7 @@ public final class PropertiesSnapshot {
 
   /** builder class for lombok and jackson. */
   @JsonPOJOBuilder(withPrefix = "")
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   public static final class PropertiesSnapshotBuilder {}
 
   /** static PropertiesSnapshot creator. */

@@ -13,12 +13,9 @@
 package com.netflix.maestro.engine.metrics;
 
 /** Class for Metric constants such as keys / tags for engine package. */
-public class MetricConstants {
+public final class MetricConstants extends com.netflix.maestro.metrics.MetricConstants {
 
-  protected MetricConstants() {}
-
-  /** Metric tag for type. */
-  public static final String TYPE_TAG = "type";
+  private MetricConstants() {}
 
   /** Candidate selected tag for launch. */
   public static final String CANDIDATE_TAG_VALUE = "candidate";
@@ -59,6 +56,9 @@ public class MetricConstants {
   /** Step init delay in milliseconds: CREATED -> INITIALIZED. */
   public static final String STEP_INITIALIZE_DELAY_METRIC = "step.initialize.delay.ms";
 
+  /** Metric name for step launch action. */
+  public static final String STEP_LAUNCHED_METRIC = "step.launch";
+
   /** Status tag, used by various metrics. */
   public static final String STATUS_TAG = "status";
 
@@ -74,9 +74,8 @@ public class MetricConstants {
   /** Status tag, used by various metrics. */
   public static final String INITIATOR_DEPTH_TAG = "depth";
 
-  /** Metrics for workflowStatusListenerCallback. */
-  public static final String WORKFLOW_STATUS_LISTENER_CALL_BACK_METRIC =
-      "workflow.statuslistener.callback";
+  /** Metrics for MaestroFinalFlowStatusCallback. */
+  public static final String FINAL_FLOW_STATUS_CALL_BACK_METRIC = "final.flow.status.callback";
 
   /** Metrics for step runtime manager terminate exceptions . */
   public static final String STEP_RUNTIME_MANAGER_TERMINATE_EXCEPTION =
@@ -87,4 +86,13 @@ public class MetricConstants {
 
   /** Metrics jobevents publish failures. */
   public static final String JOB_EVENT_PUBLISH_FAILURE_METRIC = "jobevent.publish.failure";
+
+  /** Metrics for tag permit task execution. */
+  public static final String TAG_PERMIT_EXECUTION_METRIC = "tag.permit.execution.count";
+
+  /** Metrics for tag permit task start duration. */
+  public static final String TAG_PERMIT_START_DURATION_METRIC = "tag.permit.start.duration";
+
+  /** Metrics for tag permit task acquired count. */
+  public static final String TAG_PERMIT_ACQUIRED_METRIC = "tag.permit.step.acquired";
 }

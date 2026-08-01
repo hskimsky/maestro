@@ -1,3 +1,13 @@
+// Version policy for this file: dynamic ranges (e.g. `x.+`) are intentional and are frozen by the
+// per-project gradle.lockfile via `dependencyLocking { lockAllConfigurations() }` below — the
+// lockfile IS the pin. Do NOT convert a range to a fixed version, and do NOT add a fixed
+// `toolVersion`/dependency version, as a quick hack to get past a resolution failure. Pinning here
+// freezes every consumer on a stale version, hides that an upstream release changed behavior,
+// creates silent drift from the locked graph, and shifts the maintenance burden to whoever must
+// later remember to bump it. When a new upstream release breaks resolution, the fix is to
+// regenerate the lockfiles, not to pin the source: run `./gradlew --stop` (the running daemon
+// caches resolved dynamic versions and will otherwise keep serving the old one), then re-run with
+// `--write-locks`.
 buildscript {
     repositories {
         mavenCentral()
@@ -38,33 +48,12 @@ allprojects {
         }
     }
 
-    test {
-        jvmArgs += ["-Djava.security.manager=allow"]
-    }
-
-    configurations.configureEach {
-        resolutionStrategy {
-            // Force 2.11.4 until upgrade is done
-            // Jackson is to be locked due to conversion issue with Double<>BigDecimal
-            force "com.fasterxml.jackson.core:jackson-databind:2.11.4"
-            force "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.11.4"
-        }
-    }
-
-    configurations {
-        compileClasspath {
-            resolutionStrategy.activateDependencyLocking()
-        }
-        runtimeClasspath {
-            resolutionStrategy.activateDependencyLocking()
-        }
-        annotationProcessor {
-            resolutionStrategy.activateDependencyLocking()
-        }
+    dependencyLocking {
+        lockAllConfigurations()
     }
 }
 
-configure(allprojects - project(':cockroachdb-persistence') - project(':netflix-sel')) {
+configure(allprojects - project(':netflix-sel')) {
     apply plugin: 'checkstyle'
     apply plugin: 'pmd'
     apply plugin: 'com.github.spotbugs'
@@ -76,7 +65,7 @@ configure(allprojects - project(':cockroachdb-persistence') - project(':netflix-
     }
 
     pmd {
-        toolVersion = "6.21.0"
+        toolVersion = "7.16.0"
         pmdTest.enabled = false
         consoleOutput = true
         rulesMinimumPriority = 5
@@ -107,8 +96,11 @@ configure(allprojects - project(':cockroachdb-persistence') - project(':netflix-
     }
 }
 
-configure([project(':maestro-common'), project(':maestro-engine')]) {
+configure(allprojects - project(':maestro-server')) {
     apply plugin: 'java-library'
+}
+
+configure([project(':maestro-common'), project(':maestro-engine'), project(':maestro-database')]) {
     apply plugin: 'java-test-fixtures'
 
     checkstyle {

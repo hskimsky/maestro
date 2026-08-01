@@ -15,7 +15,7 @@ package com.netflix.maestro.models.parameter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
@@ -23,13 +23,13 @@ import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.utils.MapHelper;
 import com.netflix.maestro.utils.ParamHelper;
+import jakarta.validation.Valid;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
-import javax.validation.Valid;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.experimental.SuperBuilder;
@@ -48,7 +48,7 @@ import lombok.experimental.SuperBuilder;
  * <p>SHOULD NOT mutate the evaluated string map data.
  */
 @SuppressWarnings("unchecked")
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -72,7 +72,7 @@ public final class MapParameter extends AbstractParameter {
 
   private Map<String, Object> evaluatedResult;
 
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   static final class MapParameterBuilderImpl
       extends MapParameterBuilder<MapParameter, MapParameterBuilderImpl> {
@@ -122,7 +122,7 @@ public final class MapParameter extends AbstractParameter {
         } else if (value instanceof List<?>) {
           final List<?> listValue = (List<?>) value;
           if (!(listValue).isEmpty()) {
-            Object firstValue = listValue.get(0);
+            Object firstValue = listValue.getFirst();
             if (firstValue instanceof Long) {
               long[] arr = ((List<Long>) value).stream().mapToLong(Long::longValue).toArray();
               newValue = arr;
@@ -219,7 +219,14 @@ public final class MapParameter extends AbstractParameter {
               getName());
       Parameter param;
       if (isLiteral()) { // assemble the parameter
-        param = value.get(paramName).toParameter();
+        param =
+            Checks.notNull(
+                    value.get(paramName),
+                    "Cannot find param name [%s] in value but in evaluatedResult [%s] of map param [%s]",
+                    paramName,
+                    evaluatedResult,
+                    getName())
+                .toParameter();
       } else { // use the whole sel expression as the param expression
         param =
             ParamHelper.deriveTypedParameter(
@@ -233,7 +240,7 @@ public final class MapParameter extends AbstractParameter {
         "Param [{}] is not evaluated and cannot call getEvaluatedParam()", getName());
   }
 
-  /** Check if parameter is defined. * */
+  /** Check if parameter is defined. */
   public boolean containsParam(String key) {
     return getValue().containsKey(key);
   }

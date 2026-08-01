@@ -12,22 +12,25 @@
  */
 package com.netflix.maestro.validations;
 
+import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.trigger.TimeTrigger;
+import com.netflix.maestro.utils.TriggerHelper;
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-import javax.inject.Inject;
-import javax.validation.Constraint;
-import javax.validation.ConstraintValidator;
-import javax.validation.ConstraintValidatorContext;
-import javax.validation.Payload;
+import java.util.Date;
+import java.util.Optional;
 
 /**
  * TimeTrigger constraint.
  *
- * <p>This validates TimeTrigger according to the TimeTriggerValidator interface
+ * <p>This validates {@link TimeTrigger} definition.
  */
 @Documented
 @Constraint(validatedBy = TimeTriggerConstraint.TimeTriggerConstraintValidator.class)
@@ -46,14 +49,44 @@ public @interface TimeTriggerConstraint {
   /** Maestro workflow TimeTrigger duration validator. */
   class TimeTriggerConstraintValidator
       implements ConstraintValidator<TimeTriggerConstraint, TimeTrigger> {
-    @Inject private transient TimeTriggerValidator timeTriggerValidator;
 
     @Override
     public void initialize(TimeTriggerConstraint constraint) {}
 
     @Override
+    @SuppressWarnings("PMD.ReplaceJavaUtilDate")
     public boolean isValid(TimeTrigger trigger, ConstraintValidatorContext context) {
-      return timeTriggerValidator.isValid(trigger, context);
+      try {
+        Optional<Date> d1 = TriggerHelper.nextExecutionDate(trigger, new Date(), "");
+        if (d1.isEmpty()) {
+          return true;
+        }
+        Optional<Date> d2 = TriggerHelper.nextExecutionDate(trigger, d1.get(), "");
+        if (d2.isEmpty()) {
+          return true;
+        }
+
+        long period = d2.get().getTime() - d1.get().getTime();
+
+        if (period < Constants.TIME_TRIGGER_MINIMUM_INTERVAL) {
+          context
+              .buildConstraintViolationWithTemplate(
+                  String.format(
+                      "[time-trigger] the interval between time triggers is less than the minimal value [%s] millis",
+                      Constants.TIME_TRIGGER_MINIMUM_INTERVAL))
+              .addConstraintViolation();
+          return false;
+        }
+        return true;
+      } catch (Exception e) {
+        context
+            .buildConstraintViolationWithTemplate(
+                String.format(
+                    "[time-trigger] is not valid - rejected value is [%s] - error: [%s]",
+                    trigger, e.getMessage()))
+            .addConstraintViolation();
+        return false;
+      }
     }
   }
 }

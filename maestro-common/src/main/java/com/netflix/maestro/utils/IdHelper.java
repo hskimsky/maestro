@@ -14,7 +14,10 @@ package com.netflix.maestro.utils;
 
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.definition.Workflow;
+import com.netflix.maestro.models.instance.WorkflowInstance;
+import com.netflix.maestro.models.signal.SignalParamValue;
 import com.netflix.maestro.models.trigger.TriggerUuids;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -28,6 +31,10 @@ public final class IdHelper {
   private static final char[] BASE62_CHARS =
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
   private static final int BASE = BASE62_CHARS.length;
+  private static final int OFFSET = 37;
+
+  /** flow reference formatter to convert workflow identifier to a flow reference. */
+  private static final String FLOW_REFERENCE_FORMATTER = "[%s][%s][%s]";
 
   private IdHelper() {}
 
@@ -70,7 +77,7 @@ public final class IdHelper {
 
   /** encode a long value into a hash key. */
   public static String hashKey(long value) {
-    return encodeBase62(value, false);
+    return encodeBase62(value, false, 0);
   }
 
   /**
@@ -78,33 +85,34 @@ public final class IdHelper {
    * use variable length
    */
   public static String rangeKey(long value) {
-    return encodeBase62(value, true);
+    return encodeBase62(value, true, 0);
   }
 
   /** assemble the inline workflow id prefix based on workflow internal id. */
-  public static String getInlineWorkflowPrefixId(long workflowInternalId) {
+  public static String getInlineWorkflowPrefixId(long workflowInternalId, StepType type) {
     return String.format(
-        "%s_%s_", Constants.FOREACH_INLINE_WORKFLOW_PREFIX, hashKey(workflowInternalId));
+        "%s%s_%s_", Constants.MAESTRO_PREFIX, type.getType(), hashKey(workflowInternalId));
   }
 
   /** determine if the given workflow id is for an inline workflow. */
   public static boolean isInlineWorkflowId(String workflowId) {
-    return workflowId.startsWith(Constants.FOREACH_INLINE_WORKFLOW_PREFIX);
+    return workflowId.startsWith(Constants.FOREACH_INLINE_WORKFLOW_PREFIX)
+        || workflowId.startsWith(Constants.WHILE_INLINE_WORKFLOW_PREFIX);
   }
 
   /**
-   * Encode a long value into a compact base62 string using some special algorithm. For the case
-   * (e.g. range key) if the string must be preserving the natural ordering, the value will be
+   * Encode a positive long value into a compact base62 string using some special algorithm. For the
+   * case (e.g. range key) if the string must be preserving the natural ordering, the value will be
    * encoded into base62 and then add its length as the prefix to the string. In this way, we
    * support variable length base62 encoding with the original natural ordering. e.g. 62 (base62:
    * 11) vs 9 (base62: 9) -> 211 vs 19.
    *
    * @param value value to encode
-   * @param isOrdered should the output encoded string perserve the ordering. True for rangeKey case
+   * @param isOrdered should the output encoded string preserve the ordering. True for rangeKey case
    *     and false for hashKey.
    * @return encoded base62 string
    */
-  private static String encodeBase62(long value, boolean isOrdered) {
+  private static String encodeBase62(long value, boolean isOrdered, int offset) {
     Checks.checkTrue(value > 0, "Input value must be positive: %s", value);
 
     StringBuilder sb = new StringBuilder();
@@ -115,9 +123,77 @@ public final class IdHelper {
     }
 
     if (isOrdered) {
-      sb.append(BASE62_CHARS[sb.length()]);
+      sb.append(BASE62_CHARS[sb.length() + offset]);
       sb.reverse();
     }
     return sb.toString();
+  }
+
+  /**
+   * Encode a long or string signal value into a string, which preserves the original ordering.
+   * String type will prepend '#' to the original value as the first char. Negative number will
+   * prepend the base62 encoded length to encoded negative value. Positive number will prepend the
+   * base62 encoded (length + 37) as the first char to encoded base62 value. Then the whole range
+   * will be allocated as '...string......negative......positive.... The largest string will be less
+   * than "0". The smallest number will be larger than "0". This encoding will ensure the ordering.
+   *
+   * @param value value to encode
+   * @return encoded string value
+   */
+  public static String encodeValue(SignalParamValue value) {
+    if (value.isLong()) {
+      long longValue = value.getLong();
+      if (longValue == 0) {
+        return "a0";
+      } else if (longValue > 0) {
+        return encodeBase62(longValue, true, OFFSET);
+      } else if (longValue == Long.MIN_VALUE) {
+        return "00";
+      } else if (longValue == -Long.MAX_VALUE) {
+        return "01";
+      } else {
+        return encodeBase62(Long.MAX_VALUE + longValue, true, 0);
+      }
+    } else {
+      return '#' + value.getString();
+    }
+  }
+
+  /**
+   * Return the group id for given workflow instance. It should be deterministically and evenly
+   * distributed. We don't include the run id in the groupingKey given one instance will always have
+   * a single run. So the restart will colocate in the same group but the instances are still evenly
+   * distributed.
+   */
+  public static long deriveGroupId(WorkflowInstance instance) {
+    String groupingKey = deriveFlowRef(instance);
+    return deriveGroupId(groupingKey, instance.getGroupInfo());
+  }
+
+  /** Return the grouping key based on workflow instance. */
+  public static String deriveFlowRef(WorkflowInstance instance) {
+    return deriveFlowRef(
+        instance.getWorkflowId(), instance.getWorkflowInstanceId(), instance.getWorkflowRunId());
+  }
+
+  /**
+   * Return the grouping key based on workflow id and instance id and run id. Note that although it
+   * is impossible for maestro engine to have to runs in running state, it is possible two runs of
+   * the same workflow instances are in the flow engine due to the async termination mechanism.
+   */
+  public static String deriveFlowRef(String workflowId, long instanceId, long runId) {
+    return String.format(FLOW_REFERENCE_FORMATTER, workflowId, instanceId, runId);
+  }
+
+  public static long deriveGroupId(String groupingKey, long maxGroupNum) {
+    if (maxGroupNum <= 0) { // default groupId to 0 for backward compatibility
+      return 0;
+    }
+    long ret = groupingKey.hashCode() % maxGroupNum;
+    if (ret < 0) {
+      return ret + maxGroupNum;
+    } else {
+      return ret;
+    }
   }
 }

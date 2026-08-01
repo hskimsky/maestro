@@ -34,6 +34,7 @@ import com.netflix.maestro.engine.properties.ForeachStepRuntimeProperties;
 import com.netflix.maestro.models.Actions.StepInstanceAction;
 import com.netflix.maestro.models.artifact.Artifact.Type;
 import com.netflix.maestro.models.artifact.ForeachArtifact;
+import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.definition.User;
 import com.netflix.maestro.models.initiator.ForeachInitiator;
 import com.netflix.maestro.models.initiator.UpstreamInitiator;
@@ -46,6 +47,7 @@ import com.netflix.maestro.models.instance.WorkflowInstance;
 import com.netflix.maestro.models.instance.WorkflowRollupOverview;
 import com.netflix.maestro.models.parameter.MapParameter;
 import com.netflix.maestro.models.parameter.Parameter;
+import com.netflix.maestro.queue.MaestroQueueSystem;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -76,19 +78,21 @@ public class ForeachStepRuntimeTest extends MaestroEngineBaseTest {
   private MaestroWorkflowInstanceDao workflowInstanceDao;
   @Mock private MaestroStepInstanceDao stepInstanceDao;
   @Mock private MaestroStepInstanceActionDao stepInstanceActionDao;
+  @Mock private MaestroQueueSystem queueSystem;
   @Mock private InstanceStepConcurrencyHandler instanceStepConcurrencyHandler;
   @Mock private ForeachStepRuntimeProperties foreachProperties;
   private WorkflowSummary workflowSummary;
 
   @Before
   public void setup() {
-    workflowInstanceDao = Mockito.spy(Mockito.mock(MaestroWorkflowInstanceDao.class));
+    workflowInstanceDao = Mockito.mock(MaestroWorkflowInstanceDao.class);
     foreachStepRuntime =
         new ForeachStepRuntime(
             workflowActionHandler,
             workflowInstanceDao,
             stepInstanceDao,
             stepInstanceActionDao,
+            queueSystem,
             instanceStepConcurrencyHandler,
             foreachProperties);
     doReturn(5).when(foreachProperties).getGetRollupBatchLimit();
@@ -300,6 +304,7 @@ public class ForeachStepRuntimeTest extends MaestroEngineBaseTest {
     StepRuntimeSummary runtimeSummary =
         StepRuntimeSummary.builder()
             .stepId(STEP_ID)
+            .type(StepType.FOREACH)
             .stepAttemptId(STEP_ATTEMPT_ID)
             .artifacts(new HashMap<>())
             .params(params)
@@ -318,7 +323,7 @@ public class ForeachStepRuntimeTest extends MaestroEngineBaseTest {
         .thenReturn(prevArtifact);
 
     StepRuntime.Result res = foreachStepRuntime.start(workflowSummary, null, runtimeSummary);
-    ForeachArtifact artifact = res.getArtifacts().get(Type.FOREACH.key()).asForeach();
+    ForeachArtifact artifact = res.artifacts().get(Type.FOREACH.key()).asForeach();
     assertEquals(RunPolicy.RESTART_FROM_SPECIFIC, artifact.getRunPolicy());
     assertNull(artifact.getPendingAction());
   }
@@ -351,6 +356,7 @@ public class ForeachStepRuntimeTest extends MaestroEngineBaseTest {
     StepRuntimeSummary runtimeSummary =
         StepRuntimeSummary.builder()
             .stepId(STEP_ID)
+            .type(StepType.FOREACH)
             .stepAttemptId(STEP_ATTEMPT_ID)
             .artifacts(new HashMap<>())
             .params(params)
@@ -369,7 +375,7 @@ public class ForeachStepRuntimeTest extends MaestroEngineBaseTest {
         .thenReturn(prevArtifact);
 
     StepRuntime.Result res = foreachStepRuntime.start(workflowSummary, null, runtimeSummary);
-    ForeachArtifact artifact = res.getArtifacts().get(Type.FOREACH.key()).asForeach();
+    ForeachArtifact artifact = res.artifacts().get(Type.FOREACH.key()).asForeach();
     assertEquals(RunPolicy.RESTART_FROM_SPECIFIC, artifact.getRunPolicy());
     assertEquals(restartConfig, artifact.getPendingAction().getRestartConfig());
     assertEquals(StepInstanceAction.RESTART, artifact.getPendingAction().getAction());

@@ -12,35 +12,34 @@
  */
 package com.netflix.maestro.engine.utils;
 
-import com.fasterxml.jackson.annotation.JsonValue;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.netflix.conductor.common.run.Workflow;
 import com.netflix.maestro.engine.execution.RunRequest;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
-import com.netflix.maestro.engine.tasks.MaestroStartTask;
+import com.netflix.maestro.flow.models.Flow;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.definition.Step;
-import com.netflix.maestro.models.definition.StepDependencyType;
 import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.definition.Tag;
 import com.netflix.maestro.models.initiator.Initiator;
 import com.netflix.maestro.models.initiator.UpstreamInitiator;
 import com.netflix.maestro.models.instance.RestartConfig;
-import com.netflix.maestro.models.instance.StepDependencies;
 import com.netflix.maestro.models.instance.StepInstance;
 import com.netflix.maestro.models.instance.StepInstanceTransition;
 import com.netflix.maestro.models.instance.StepRuntimeState;
+import com.netflix.maestro.models.instance.WorkflowInstance;
+import com.netflix.maestro.models.instance.WorkflowRuntimeOverview;
 import com.netflix.maestro.models.parameter.ParamDefinition;
+import com.netflix.maestro.models.signal.SignalDependencies;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.HashHelper;
 import com.netflix.maestro.utils.IdHelper;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import lombok.Getter;
 
 /** Utility class for step. */
 @SuppressWarnings("unchecked")
@@ -48,9 +47,6 @@ public final class StepHelper {
   private static final String RUNTIME_STATE_FIELD = "runtime_state";
   private static final String STATUS_FIELD = "status";
   private static final String TRANSITION_FIELD = "transition";
-  private static final TypeReference<Map<String, Map<StepDependencyType, StepDependencies>>>
-      ALL_STEP_DEPENDENCIES_REFERENCE =
-          new TypeReference<Map<String, Map<StepDependencyType, StepDependencies>>>() {};
   private static final String CONVERT_FIELD_ERROR = "Cannot find field [%s] in the data";
 
   private StepHelper() {}
@@ -66,24 +62,6 @@ public final class StepHelper {
       return step.getName();
     } else {
       return step.getId();
-    }
-  }
-
-  /**
-   * Wrap a step for JSON serialization.
-   *
-   * @param step given step object
-   * @return wrapped step
-   */
-  public static StepWrapper wrap(Step step) {
-    return new StepWrapper(step);
-  }
-
-  public static class StepWrapper {
-    @JsonValue @Getter private final Step step;
-
-    StepWrapper(Step step) {
-      this.step = step;
     }
   }
 
@@ -118,16 +96,6 @@ public final class StepHelper {
   }
 
   /**
-   * Utility method to retrieve step definition from the key-value data.
-   *
-   * @param data all data in a map
-   * @return a step definition object
-   */
-  public static Step retrieveStepDefinition(ObjectMapper objectMapper, Map<String, Object> data) {
-    return convertField(objectMapper, data, Constants.STEP_DEFINITION_FIELD, Step.class);
-  }
-
-  /**
    * Utility method to retrieve step runtime summary from the key-value data.
    *
    * @param data all data in a map
@@ -140,21 +108,12 @@ public final class StepHelper {
   }
 
   /** utility to get the step dependencies summaries of a stepId. */
-  public static Map<StepDependencyType, StepDependencies> getStepDependencies(
-      Workflow workflow, String stepId, ObjectMapper objectMapper) {
-    if (workflow
-        .getTaskByRefName(Constants.DEFAULT_START_STEP_NAME)
-        .getOutputData()
-        .containsKey(MaestroStartTask.ALL_STEP_DEPENDENCIES)) {
-      Map<String, Map<StepDependencyType, StepDependencies>> allStepDependencies =
-          convertField(
-              objectMapper,
-              workflow.getTaskByRefName(Constants.DEFAULT_START_STEP_NAME).getOutputData(),
-              MaestroStartTask.ALL_STEP_DEPENDENCIES,
-              ALL_STEP_DEPENDENCIES_REFERENCE);
-      if (allStepDependencies != null) {
-        return allStepDependencies.get(stepId);
-      }
+  public static SignalDependencies getSignalDependencies(Flow flow, String stepId) {
+    if (flow.getPrepareTask().getOutputData().containsKey(Constants.ALL_STEP_DEPENDENCIES_FIELD)) {
+      var allStepDependencies =
+          (Map<String, SignalDependencies>)
+              flow.getPrepareTask().getOutputData().get(Constants.ALL_STEP_DEPENDENCIES_FIELD);
+      return allStepDependencies.get(stepId);
     }
     return null;
   }
@@ -207,12 +166,32 @@ public final class StepHelper {
    */
   public static StepInstanceTransition retrieveStepTransition(
       ObjectMapper objectMapper, Map<String, Object> data) {
+    Object value = data.getOrDefault(Constants.STEP_RUNTIME_SUMMARY_FIELD, Collections.emptyMap());
+    if (value instanceof StepRuntimeSummary) {
+      return ((StepRuntimeSummary) value).getTransition();
+    }
     return convertField(
-        objectMapper,
-        (Map<String, Object>)
-            data.getOrDefault(Constants.STEP_RUNTIME_SUMMARY_FIELD, Collections.emptyMap()),
-        TRANSITION_FIELD,
-        StepInstanceTransition.class);
+        objectMapper, (Map<String, Object>) value, TRANSITION_FIELD, StepInstanceTransition.class);
+  }
+
+  /** Use the md5 of workflow id, instance id, and step id as the generated inline workflow id. */
+  public static String generateInlineWorkflowId(
+      WorkflowSummary workflowSummary, StepRuntimeSummary runtimeSummary) {
+    long instanceId = workflowSummary.getWorkflowInstanceId();
+    if (workflowSummary.getInitiator().getType().isInline()) {
+      instanceId =
+          ((UpstreamInitiator) workflowSummary.getInitiator()).getNonInlineParent().getInstanceId();
+    }
+
+    return String.format(
+        "%s%s_%s",
+        IdHelper.getInlineWorkflowPrefixId(
+            workflowSummary.getInternalId(), runtimeSummary.getType()),
+        IdHelper.rangeKey(instanceId),
+        HashHelper.md5(
+            runtimeSummary.getStepId(),
+            String.valueOf(workflowSummary.getWorkflowInstanceId()),
+            workflowSummary.getWorkflowId()));
   }
 
   /** Create workflow run requests within subworkflow and foreach steps. */
@@ -221,7 +200,8 @@ public final class StepHelper {
       StepRuntimeSummary runtimeSummary,
       List<Tag> tags,
       Map<String, ParamDefinition> runParams,
-      String dedupKey) {
+      String dedupKey,
+      Boolean syncMode) {
 
     UpstreamInitiator initiator =
         UpstreamInitiator.withType(Initiator.Type.valueOf(runtimeSummary.getType().name()));
@@ -231,6 +211,7 @@ public final class StepHelper {
     parent.setRunId(workflowSummary.getWorkflowRunId());
     parent.setStepId(runtimeSummary.getStepId());
     parent.setStepAttemptId(runtimeSummary.getStepAttemptId());
+    parent.setSync(syncMode);
 
     List<UpstreamInitiator.Info> ancestors = new ArrayList<>();
     if (workflowSummary.getInitiator() instanceof UpstreamInitiator) {
@@ -252,6 +233,7 @@ public final class StepHelper {
         .currentPolicy(workflowSummary.getRunPolicy()) // default and might be updated
         .runtimeTags(tags)
         .correlationId(workflowSummary.getCorrelationId())
+        .groupInfo(workflowSummary.getGroupInfo())
         .instanceStepConcurrency(workflowSummary.getInstanceStepConcurrency()) // pass it down
         .runParams(runParams)
         .restartConfig(
@@ -280,30 +262,34 @@ public final class StepHelper {
    */
   private static <T> T convertField(
       ObjectMapper objectMapper, Map<String, Object> data, String fieldName, Class<T> clazz) {
-    return objectMapper.convertValue(
-        Checks.notNull(data.get(fieldName), CONVERT_FIELD_ERROR, fieldName), clazz);
-  }
-
-  /**
-   * Utility method to convert an object in the field of the data to a given class reference type.
-   *
-   * @param data map of all data
-   * @param fieldName map key to get the specific info
-   * @param typeReference typeReference to convert
-   * @param <T> Type of converted object
-   * @return a converted object
-   */
-  private static <T> T convertField(
-      ObjectMapper objectMapper,
-      Map<String, Object> data,
-      String fieldName,
-      TypeReference<T> typeReference) {
-    return objectMapper.convertValue(
-        Checks.notNull(data.get(fieldName), CONVERT_FIELD_ERROR, fieldName), typeReference);
+    Object value = Checks.notNull(data.get(fieldName), CONVERT_FIELD_ERROR, fieldName);
+    if (clazz.isInstance(value)) {
+      return (T) value;
+    }
+    return objectMapper.convertValue(value, clazz);
   }
 
   /** Returns the step type info - if subType is available, return it, else the step type. */
   public static String getStepTypeInfo(StepType stepType, String subType) {
-    return Checks.isNullOrEmpty(subType) ? stepType.name() : subType;
+    return ObjectHelper.isNullOrEmpty(subType) ? stepType.name() : subType;
+  }
+
+  /**
+   * Build a workflow instance from the workflow summary and overview for termination.
+   *
+   * @param summary workflow summary
+   * @param overview workflow runtime overview
+   * @return a workflow instance used for termination
+   */
+  public static WorkflowInstance buildTerminateWorkflowInstance(
+      WorkflowSummary summary, WorkflowRuntimeOverview overview) {
+    WorkflowInstance toTerminate = new WorkflowInstance();
+    toTerminate.setWorkflowId(summary.getWorkflowId());
+    toTerminate.setWorkflowInstanceId(summary.getWorkflowInstanceId());
+    toTerminate.setWorkflowRunId(summary.getWorkflowRunId());
+    toTerminate.setGroupInfo(summary.getGroupInfo());
+    toTerminate.setRuntimeDag(summary.getRuntimeDag());
+    toTerminate.setRuntimeOverview(overview);
+    return toTerminate;
   }
 }

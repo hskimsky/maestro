@@ -18,6 +18,7 @@ import com.netflix.maestro.annotations.VisibleForTesting;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.utils.StepHelper;
 import com.netflix.maestro.exceptions.MaestroInternalError;
+import com.netflix.maestro.exceptions.MaestroInvalidExpressionException;
 import com.netflix.maestro.exceptions.MaestroRuntimeException;
 import com.netflix.maestro.exceptions.MaestroUnprocessableEntityException;
 import com.netflix.maestro.exceptions.MaestroValidationException;
@@ -30,7 +31,6 @@ import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.utils.ParamHelper;
 import java.util.AbstractMap;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -59,13 +59,18 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @AllArgsConstructor
 public class ParamEvaluator {
-  private static final String STEP_PARAM_SEPARATOR = "__";
   private static final String SIGNAL_EXPRESSION_TEMPLATE =
       "return params.getFromSignal('%s', '%s');";
   private static final String PARAM_NAME_FOR_ALL = "params";
 
   private final ExprEvaluator exprEvaluator;
   private final ObjectMapper objectMapper;
+  private final String stepParamSeparator;
+
+  /** Convenience constructor using the default step param separator {@code __}. */
+  public ParamEvaluator(ExprEvaluator exprEvaluator, ObjectMapper objectMapper) {
+    this(exprEvaluator, objectMapper, Constants.DEFAULT_STEP_PARAM_SEPARATOR);
+  }
 
   /**
    * Evaluate workflow parameters.
@@ -154,10 +159,11 @@ public class ParamEvaluator {
         parseWorkflowParameter(
             workflowParams, workflowParams.get(refParamName), workflowId, visited);
         refParams.put(refParamName, workflowParams.get(refParamName));
-      } else if (refParamName.contains(STEP_PARAM_SEPARATOR)) {
+      } else if (refParamName.contains(stepParamSeparator)) {
         // here it might be from signal triggers
         Map.Entry<String, String> pair = parseReferenceName(refParamName, Collections.emptyMap());
-        refParams.put(refParamName, getReferenceSignalParam(pair.getKey(), pair.getValue()));
+        refParams.put(
+            refParamName, getReferenceSignalParam(refParamName, pair.getKey(), pair.getValue()));
       } else {
         throw new MaestroValidationException(
             "Param [%s] referenced a non-existing param [%s] in workflow [%s]",
@@ -198,15 +204,14 @@ public class ParamEvaluator {
    * @param stepParams all evaluated step params
    * @param parameters all step dependencies params to be evaluated
    */
-  public void evaluateStepDependenciesOrOutputsParameters(
+  public void evaluateSignalDependenciesOrOutputsParameters(
       Map<String, Map<String, Object>> allStepOutputData,
       Map<String, Parameter> workflowParams,
       Map<String, Parameter> stepParams,
-      Collection<List<MapParameter>> parameters,
+      List<MapParameter> parameters,
       String stepId) {
-    parameters.stream()
-        .flatMap(Collection::stream)
-        .forEach(v -> parseStepParameter(allStepOutputData, workflowParams, stepParams, v, stepId));
+    parameters.forEach(
+        v -> parseStepParameter(allStepOutputData, workflowParams, stepParams, v, stepId));
   }
 
   /**
@@ -313,7 +318,7 @@ public class ParamEvaluator {
       Set<String> visited) {
     Map<String, Parameter> usedParams = new HashMap<>();
     for (String refParam : refParamNames) {
-      if (refParam.contains(STEP_PARAM_SEPARATOR)) {
+      if (refParam.contains(stepParamSeparator)) {
         usedParams.put(
             refParam,
             getReferenceParam(
@@ -350,12 +355,19 @@ public class ParamEvaluator {
     return usedParams;
   }
 
-  /** Extract step id and param name from the reference. It handles `__`, `___`, and `____`. */
+  /**
+   * Extract step id and param name from the reference. It handles separator, separator with one
+   * extra underscore, and separator with two extra underscores (e.g. {@code __}, {@code ___}, and
+   * {@code ____} for the default separator).
+   */
   private Map.Entry<String, String> parseReferenceName(
       String refParam, Map<String, Map<String, Object>> allStepOutputData) {
-    int idx1 = refParam.indexOf(STEP_PARAM_SEPARATOR);
-    int idx2 = refParam.lastIndexOf(STEP_PARAM_SEPARATOR);
-    //  ___ or ____ case
+    int idx1 = refParam.indexOf(stepParamSeparator);
+    int idx2 = refParam.lastIndexOf(stepParamSeparator);
+    // Overlapping separator match: occurs when the step ID ends with a character that is also
+    // the start of the separator (e.g. step ID "_step1" with separator "__" produces
+    // "_step1___foo" where the separator matches at two positions). Disambiguate by checking
+    // which candidate step ID exists in allStepOutputData.
     if (idx1 != idx2) {
       String id1 = refParam.substring(0, idx1);
       String id2 = refParam.substring(0, idx1 + 1);
@@ -374,7 +386,7 @@ public class ParamEvaluator {
       }
     }
     String refStepId = refParam.substring(0, idx1);
-    String refParamName = refParam.substring(idx1 + 2);
+    String refParamName = refParam.substring(idx1 + stepParamSeparator.length());
     return new AbstractMap.SimpleEntry<>(refStepId, refParamName);
   }
 
@@ -408,14 +420,17 @@ public class ParamEvaluator {
 
     // here it might be from signal triggers or signal dependencies (not supported yet)
     if (!allStepOutputData.containsKey(refStepId)) {
-      return getReferenceSignalParam(refStepId, refParamName);
+      return getReferenceSignalParam(refParam, refStepId, refParamName);
     }
 
     Map<String, Object> refStepData =
         Checks.notNull(
             allStepOutputData.get(refStepId),
-            "Error: reference a non-existing step [%s] in the expression.",
-            refStepId);
+            "Error: param [%s] in step [%s] referenced a non-existing step [%s] in the expression [%s]",
+            paramName,
+            stepId,
+            refStepId,
+            refParam);
     StepRuntimeSummary refRuntimeSummary =
         StepHelper.retrieveRuntimeSummary(objectMapper, refStepData);
     Parameter refStepParam =
@@ -439,15 +454,26 @@ public class ParamEvaluator {
    * Extract signal param value from the signal and wrap it into a Parameter. Currently, it only
    * returns a StringParameter.
    */
-  private Parameter getReferenceSignalParam(String signalName, String paramName) {
-    String expr = String.format(SIGNAL_EXPRESSION_TEMPLATE, signalName, paramName);
-    Object val = exprEvaluator.eval(expr, Collections.emptyMap());
-    Parameter param =
-        ParamHelper.deriveTypedParameter(
-            paramName, expr, val, null, ParamMode.IMMUTABLE, Collections.emptyMap());
-    param.setEvaluatedResult(val);
-    param.setEvaluatedTime(System.currentTimeMillis());
-    return param;
+  @SuppressWarnings({"PMD.PreserveStackTrace"})
+  private Parameter getReferenceSignalParam(String refParam, String signalName, String paramName) {
+    try {
+      String expr = String.format(SIGNAL_EXPRESSION_TEMPLATE, signalName, paramName);
+      Object val = exprEvaluator.eval(expr, Collections.emptyMap());
+      Parameter param =
+          ParamHelper.deriveTypedParameter(
+              paramName, expr, val, null, ParamMode.IMMUTABLE, Collections.emptyMap());
+      param.setEvaluatedResult(val);
+      param.setEvaluatedTime(System.currentTimeMillis());
+      return param;
+    } catch (MaestroRuntimeException e) {
+      LOG.warn(
+          "Failed to evaluate [{}] as a param within signal triggers or dependencies due to",
+          refParam,
+          e);
+      throw new MaestroInvalidExpressionException(
+          "Failed to evaluate the param with a definition: [%s]. Please check if there is a typo in the expression.",
+          refParam);
+    }
   }
 
   /**

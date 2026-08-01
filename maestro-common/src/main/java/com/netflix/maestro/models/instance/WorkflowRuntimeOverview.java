@@ -15,7 +15,7 @@ package com.netflix.maestro.models.instance;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.models.definition.StepTransition;
@@ -30,12 +30,13 @@ import java.util.stream.Collectors;
 import lombok.Data;
 
 /** Workflow step instances' overview at runtime. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {"total_step_count", "step_overview", "rollup_overview", "run_status"},
     alphabetic = true)
 @Data
+@SuppressWarnings("PMD.LooseCoupling")
 public class WorkflowRuntimeOverview {
   private long totalStepCount;
   private EnumMap<StepInstance.Status, WorkflowStepStatusSummary> stepOverview =
@@ -120,7 +121,7 @@ public class WorkflowRuntimeOverview {
                     stepInfo -> {
                       String stepId =
                           Checks.notNull(
-                              ordinalStepMap.remove(stepInfo.get(0)),
+                              ordinalStepMap.remove(stepInfo.getFirst()),
                               "cannot find step id for stepInfo [%s]",
                               stepInfo);
                       StepRuntimeState state = new StepRuntimeState();

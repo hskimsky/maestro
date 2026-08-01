@@ -14,15 +14,17 @@ package com.netflix.maestro.models.trigger;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.validations.CronConstraint;
 import com.netflix.maestro.validations.TimeZoneConstraint;
-import javax.validation.Valid;
+import jakarta.validation.Valid;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /** Cron based time trigger. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@EqualsAndHashCode(callSuper = true)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(alphabetic = true)
 @Data

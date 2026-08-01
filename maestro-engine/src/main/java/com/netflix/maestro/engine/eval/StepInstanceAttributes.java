@@ -14,6 +14,8 @@ package com.netflix.maestro.engine.eval;
 
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.models.definition.StepType;
+import com.netflix.maestro.models.instance.StepInstance;
+import com.netflix.maestro.models.signal.SignalDependencies;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -31,6 +33,9 @@ class StepInstanceAttributes {
   private final long stepInstanceId;
   private final long stepAttemptId;
   private final String stepInstanceUuid;
+  private final StepInstance.StepRetry stepRetry;
+  private final SignalDependencies signalDependencies;
+  private final StepInstance.Status status;
 
   static StepInstanceAttributes from(StepRuntimeSummary summary) {
     return StepInstanceAttributes.builder()
@@ -40,6 +45,9 @@ class StepInstanceAttributes {
         .stepInstanceId(summary.getStepInstanceId())
         .stepAttemptId(summary.getStepAttemptId())
         .stepInstanceUuid(summary.getStepInstanceUuid())
+        .stepRetry(summary.getStepRetry())
+        .signalDependencies(summary.getSignalDependencies())
+        .status(summary.getRuntimeState().getStatus())
         .build();
   }
 }

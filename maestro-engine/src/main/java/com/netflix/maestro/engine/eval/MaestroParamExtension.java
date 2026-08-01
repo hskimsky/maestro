@@ -15,23 +15,29 @@ package com.netflix.maestro.engine.eval;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netflix.maestro.engine.dao.MaestroStepInstanceDao;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
+import com.netflix.maestro.engine.handlers.SignalHandler;
 import com.netflix.maestro.engine.utils.StepHelper;
 import com.netflix.maestro.engine.validations.DryRunValidator;
 import com.netflix.maestro.exceptions.MaestroInternalError;
+import com.netflix.maestro.exceptions.MaestroInvalidExpressionException;
 import com.netflix.maestro.exceptions.MaestroValidationException;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.artifact.Artifact;
 import com.netflix.maestro.models.artifact.ForeachArtifact;
+import com.netflix.maestro.models.artifact.SubworkflowArtifact;
 import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.initiator.Initiator;
 import com.netflix.maestro.models.initiator.ManualInitiator;
 import com.netflix.maestro.models.initiator.SignalInitiator;
+import com.netflix.maestro.models.instance.StepInstance;
 import com.netflix.maestro.models.parameter.ParamType;
 import com.netflix.maestro.models.parameter.Parameter;
+import com.netflix.maestro.models.signal.SignalDependencies;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.ObjectHelper;
 import com.netflix.sel.ext.AbstractParamExtension;
-import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +48,6 @@ import lombok.AllArgsConstructor;
  * class should be read-only and not mutate any states of the input. Also, it takes its own security
  * risks as it is not restricted by SEL security feature.
  */
-@SuppressWarnings({"PMD.DoNotUseThreads", "PMD.BeanMembersShouldSerialize"})
 @AllArgsConstructor
 public class MaestroParamExtension extends AbstractParamExtension {
   private static final int RANDOM_JITTER_DELAY = 10;
@@ -72,6 +77,9 @@ public class MaestroParamExtension extends AbstractParamExtension {
   /** Function to get the signal metadata for return default value if not found. */
   static final String GET_FROM_SIGNAL_OR_DEFAULT = "getFromSignalOrDefault";
 
+  /** Function to get the data from the subworkflow instance. */
+  static final String GET_FROM_SUBWORKFLOW = "getFromSubworkflow";
+
   /** Function to get the foreach metadata. */
   static final String GET_FROM_FOREACH = "getFromForeach";
 
@@ -79,7 +87,7 @@ public class MaestroParamExtension extends AbstractParamExtension {
   private final MaestroStepInstanceDao stepInstanceDao;
   private final String env;
   private final Map<String, Map<String, Object>> allStepOutputData;
-  private final Map<String, List<Map<String, Parameter>>> signalDependenciesParams;
+  private final SignalHandler signalHandler;
   private final InstanceWrapper instanceWrapper;
   private final ObjectMapper objectMapper;
 
@@ -100,6 +108,8 @@ public class MaestroParamExtension extends AbstractParamExtension {
       return getFromInstance(arg1);
     } else if (GET_FROM_STEP.equals(methodName)) {
       return getFromStep(arg1);
+    } else if (GET_FROM_SIGNAL.equals(methodName)) {
+      return getFromSignal(arg1);
     }
     throw new UnsupportedOperationException(
         String.format(
@@ -132,6 +142,8 @@ public class MaestroParamExtension extends AbstractParamExtension {
         throw new IllegalStateException(
             methodName + " must return an array instead of " + res.getClass());
       }
+    } else if (GET_FROM_SUBWORKFLOW.equals(methodName)) {
+      return getFromSubworkflow(arg1, arg2, arg3);
     } else if (GET_FROM_SIGNAL_OR_DEFAULT.equals(methodName)) {
       return getFromSignalOrDefault(arg1, arg2, arg3);
     }
@@ -167,6 +179,12 @@ public class MaestroParamExtension extends AbstractParamExtension {
     StepRuntimeSummary runtimeSummary = validateAndGet(stepId);
     if (Constants.STEP_STATUS_PARAM.equals(paramName)) {
       return runtimeSummary.getRuntimeState().getStatus().name();
+    } else if (Constants.STEP_END_TIME_PARAM.equals(paramName)) {
+      return Checks.notNull(
+          runtimeSummary.getRuntimeState().getEndTime(),
+          "ERROR: step [%s]'s [%s] is not set yet.",
+          stepId,
+          paramName);
     }
     Parameter stepParam =
         Checks.notNull(
@@ -192,6 +210,39 @@ public class MaestroParamExtension extends AbstractParamExtension {
             "Cannot find the referenced step id [%s] in the current workflow",
             stepId);
     return StepHelper.retrieveRuntimeSummary(objectMapper, stepData);
+  }
+
+  Object getFromSignal(String paramName) {
+    try {
+      return executor
+          .submit(() -> fromSignal(paramName))
+          .get(TIMEOUT_IN_MILLIS, TimeUnit.MILLISECONDS);
+    } catch (Exception e) {
+      throw new MaestroInternalError(
+          e, "getFromSignal throws an exception for paramName=[%s]", paramName);
+    }
+  }
+
+  private Object fromSignal(String paramName) {
+    Initiator initiator = instanceWrapper.getInitiator();
+    if (initiator instanceof DryRunValidator.ValidationInitiator) {
+      instanceWrapper.validateSignalParamName(paramName);
+      // Note that signal param can only be string or long type
+      return DUMMY_VALIDATION_VALUE;
+    }
+    Checks.checkTrue(
+        initiator.getType() == Initiator.Type.SIGNAL,
+        "Initiator [%s] is not a signal trigger and cannot get a param [%s] from it",
+        initiator,
+        paramName);
+    Map<String, Parameter> params =
+        Checks.notNull(
+            ((SignalInitiator) initiator).getParams(),
+            "Cannot get param [%s] as signal initiator's param is null",
+            paramName);
+    return Checks.notNull(
+            params.get(paramName), "Cannot find param [%s] from the signal initiator", paramName)
+        .getEvaluatedResult();
   }
 
   Object getFromSignal(String signalName, String paramName) {
@@ -221,83 +272,71 @@ public class MaestroParamExtension extends AbstractParamExtension {
     Initiator initiator = instanceWrapper.getInitiator();
     if (initiator instanceof DryRunValidator.ValidationInitiator) {
       instanceWrapper.validateSignalName(signalName);
-      // Note that it only works for string, long, or double type param
+      // Note that signal param can only be string or long type
       return DUMMY_VALIDATION_VALUE;
     }
     Checks.checkTrue(
         initiator.getType() == Initiator.Type.SIGNAL,
-        "Initiator [%s] is not a signal trigger and cannot get a param [%s] from it [%s]",
+        "Initiator [%s] is not a signal trigger and cannot get a param [%s] from the signal [%s]",
         initiator,
         paramName,
         signalName);
-    Map<String, Parameter> params =
-        Checks.notNull(
-            ((SignalInitiator) initiator).getParams(),
-            "Cannot get param [%s] from signal [%s] as signal initiator's param is null",
-            paramName,
-            signalName);
-    Parameter signalParams =
-        Checks.notNull(
-            params.get(signalName),
-            "Cannot find signal [%s] in the signal initiator[%s]",
-            signalName,
-            initiator);
-
-    if (signalParams.getType() == ParamType.MAP) {
-      return Checks.notNull(
-          signalParams.asMap().get(paramName),
-          "Cannot find param [%s] from the signal [%s]",
-          paramName,
-          signalName);
-    } else if (signalParams.getType() == ParamType.STRING_MAP) {
-      return Checks.notNull(
-          signalParams.asStringMap().get(paramName),
-          "Cannot find string param [%s] from the signal [%s]",
-          paramName,
-          signalName);
-    } else {
+    Long signalId = ((SignalInitiator) initiator).getSignalIdMap().get(signalName);
+    var value = getSignalParam(signalName, signalId, paramName);
+    if (value == null) {
       throw new MaestroValidationException(
-          "Invalid param type [%s] for signal params [%s], which must be MAP or STRING_MAP",
-          signalParams.getType(), signalName);
+          "Cannot find param [%s] for signal [%s] in the initiator ", paramName, signalName);
     }
+    return value;
   }
 
-  Object getFromSignalDependency(String signalDependencyName, String paramName) {
+  Object getFromSignalDependency(String signalDependencyIndex, String paramName) {
     try {
       return executor
-          .submit(() -> fromSignalDependency(signalDependencyName, paramName))
+          .submit(() -> fromSignalDependency(signalDependencyIndex, paramName))
           .get(TIMEOUT_IN_MILLIS, TimeUnit.MILLISECONDS);
     } catch (Exception e) {
       throw new MaestroInternalError(
           e,
-          "getFromSignalDependency throws an exception for signalDependencyName=[%s], paramName=[%s]",
-          signalDependencyName,
+          "getFromSignalDependency throws an exception for signalDependencyIndex=[%s], paramName=[%s]",
+          signalDependencyIndex,
           paramName);
     }
   }
 
-  private Object fromSignalDependency(String signalDependencyName, String paramName) {
-    List<Map<String, Parameter>> dependencyParams =
-        Checks.notNull(
-            signalDependenciesParams.get(signalDependencyName),
-            "Cannot find signal dependency [%s] in the step signal dependencies [%s]",
-            signalDependencyName,
-            signalDependenciesParams.keySet());
-
-    if (!dependencyParams.isEmpty()) {
+  private Object fromSignalDependency(String signalDependencyIndex, String paramName) {
+    SignalDependencies dependencies =
+        instanceWrapper.getStepInstanceAttributes().getSignalDependencies();
+    if (dependencies != null) {
+      int size = dependencies.getDependencies().size();
+      OptionalLong idx = ObjectHelper.toNumeric(signalDependencyIndex);
       Checks.checkTrue(
-          dependencyParams.size() == 1,
-          "Not support referencing param [%s] from multiple signal dependencies with the same name [%s]",
-          paramName,
-          signalDependencyName);
-
-      Parameter parameter = dependencyParams.get(0).get(paramName);
-      if (parameter != null) {
-        return parameter.getEvaluatedResult();
+          idx.isPresent() && idx.getAsLong() < size,
+          "Signal dependency index is out of bound [%s > %s]",
+          idx,
+          size);
+      var signal = dependencies.getDependencies().get((int) idx.getAsLong());
+      var value = getSignalParam(signal.getName(), signal.getSignalId(), paramName);
+      if (value != null) {
+        return value;
       }
     }
     throw new MaestroValidationException(
-        "Cannot find param [%s] from signal dependency [%s]", paramName, signalDependencyName);
+        "Cannot find param [%s] for signal dependency index [%s]",
+        paramName, signalDependencyIndex);
+  }
+
+  private Object getSignalParam(String signalName, Long signalId, String paramName) {
+    if (signalId != null) {
+      var instance = signalHandler.getSignalInstance(signalName, signalId);
+      if (instance != null && instance.getParams() != null) {
+        var param = instance.getParams().get(paramName);
+        if (param != null) {
+          return param.isLong() ? param.getLong() : param.getString();
+        }
+      }
+    }
+    return null;
   }
 
   Object getFromForeach(String foreachStepId, String stepId, String paramName) {
@@ -365,6 +404,48 @@ public class MaestroParamExtension extends AbstractParamExtension {
     }
   }
 
+  Object getFromSubworkflow(String subworkflowStepId, String stepId, String paramName) {
+    try {
+      return executor
+          .submit(() -> fromSubworkflow(subworkflowStepId, stepId, paramName))
+          .get(TIMEOUT_IN_MILLIS, TimeUnit.MILLISECONDS);
+    } catch (Exception e) {
+      throw new MaestroInternalError(
+          e,
+          "getFromSubworkflow throws an exception for subworkflowStepId=[%s], stepId=[%s], paramName=[%s]",
+          subworkflowStepId,
+          stepId,
+          paramName);
+    }
+  }
+
+  private Object fromSubworkflow(String subworkflowStepId, String stepId, String paramName) {
+    StepRuntimeSummary runtimeSummary = validateAndGet(subworkflowStepId);
+    Checks.checkTrue(
+        runtimeSummary.getType() == StepType.SUBWORKFLOW,
+        "step [%s] is a type of [%s] instead of subworkflow step, cannot call getFromSubworkflow",
+        subworkflowStepId,
+        runtimeSummary.getType());
+
+    SubworkflowArtifact artifact =
+        Checks.notNull(
+                runtimeSummary.getArtifacts().get(Artifact.Type.SUBWORKFLOW.key()),
+                "Cannot load param [%s] of step [%s] from subworkflow [%s] as it is not initialized",
+                paramName,
+                stepId,
+                subworkflowStepId)
+            .asSubworkflow();
+
+    StepInstance stepInstance =
+        stepInstanceDao.getStepInstanceView(
+            artifact.getSubworkflowId(), artifact.getSubworkflowInstanceId(), stepId);
+
+    if (stepInstance.getParams() == null || !stepInstance.getParams().containsKey(paramName)) {
+      throw new MaestroInvalidExpressionException("Cannot find the param name: [%s]", paramName);
+    }
+    return stepInstance.getParams().get(paramName).getEvaluatedResult();
+  }
+
   Long nextUniqueId() {
     try {
       Thread.sleep(ThreadLocalRandom.current().nextInt(RANDOM_JITTER_DELAY));
@@ -420,6 +501,8 @@ public class MaestroParamExtension extends AbstractParamExtension {
         return instanceWrapper.getWorkflowId();
       case Constants.WORKFLOW_INSTANCE_ID_PARAM:
         return instanceWrapper.getWorkflowInstanceId();
+      case Constants.WORKFLOW_RUN_ID_PARAM:
+        return instanceWrapper.getWorkflowRunId();
       default:
         throw new MaestroValidationException(
             "Invalid field name [%s] for getFromInstance call", fieldName);
@@ -450,6 +533,10 @@ public class MaestroParamExtension extends AbstractParamExtension {
       case Constants.STEP_TYPE_INFO_PARAM:
         return StepHelper.getStepTypeInfo(
             stepInstanceAttributes.getType(), stepInstanceAttributes.getSubType());
+      case Constants.STEP_ERROR_RETRIES_PARAM:
+        return stepInstanceAttributes.getStepRetry().getErrorRetries();
+      case Constants.STEP_STATUS_PARAM:
+        return stepInstanceAttributes.getStatus().name();
       default:
         throw new MaestroValidationException(
             "Invalid field name [%s] for getFromStep call", fieldName);

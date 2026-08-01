@@ -17,34 +17,35 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
-import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
 import java.util.Locale;
-import javax.validation.constraints.Max;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 
 /** Step retry policy. */
 @Builder(toBuilder = true)
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
-    value = {"error_retry_limit", "platform_retry_limit", "backoff"},
+    value = {"error_retry_limit", "platform_retry_limit", "timeout_retry_limit", "backoff"},
     alphabetic = true)
 @JsonDeserialize(builder = RetryPolicy.RetryPolicyBuilder.class)
 @Getter
 @EqualsAndHashCode
 public class RetryPolicy {
-  @Max(Constants.MAX_RETRY_LIMIT)
-  private final Long errorRetryLimit;
+  /** Retry limit for user errors. */
+  private final ParsableLong errorRetryLimit;
 
-  @Max(Constants.MAX_RETRY_LIMIT)
-  private final Long platformRetryLimit;
+  /** Retry limit for platform errors. */
+  private final ParsableLong platformRetryLimit;
+
+  /** Retry limit for timeout errors. */
+  private final ParsableLong timeoutRetryLimit;
 
   /** Backoff strategy. */
   private final Backoff backoff;
@@ -67,7 +68,7 @@ public class RetryPolicy {
    * Merge a given step retry policy with DEFAULT RETRY POLICY.
    *
    * @param policy retry policy
-   * @return retry policy
+   * @return final retry policy
    */
   public static RetryPolicy tryMergeWithDefault(RetryPolicy policy) {
     RetryPolicy defaultRetryPolicy = Defaults.DEFAULT_RETRY_POLICY;
@@ -81,6 +82,10 @@ public class RetryPolicy {
       // Merge from default.
       if (retryPolicyBuilder.platformRetryLimit == null) {
         retryPolicyBuilder.platformRetryLimit = defaultRetryPolicy.platformRetryLimit;
+      }
+      // Merge from default.
+      if (retryPolicyBuilder.timeoutRetryLimit == null) {
+        retryPolicyBuilder.timeoutRetryLimit = defaultRetryPolicy.timeoutRetryLimit;
       }
       if (retryPolicyBuilder.backoff == null) {
         retryPolicyBuilder.backoff = defaultRetryPolicy.backoff;
@@ -112,13 +117,16 @@ public class RetryPolicy {
     /** Get next retry delay for platform errors. */
     int getNextRetryDelayForPlatformError(long platformRetries);
 
+    /** Get next retry delay for timeout errors. */
+    int getNextRetryDelayForTimeoutError(long timeoutRetries);
+
     /** Merge with default and get new backoff. */
     Backoff mergeWithDefault();
   }
 
   /** Exponential Backoff. */
   @Builder(toBuilder = true)
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonPropertyOrder(
       value = {
@@ -127,7 +135,10 @@ public class RetryPolicy {
         "error_retry_limit_in_secs",
         "platform_retry_backoff_in_secs",
         "platform_retry_exponent",
-        "platform_retry_limit_in_secs"
+        "platform_retry_limit_in_secs",
+        "timeout_retry_backoff_in_secs",
+        "timeout_retry_exponent",
+        "timeout_retry_limit_in_secs"
       },
       alphabetic = true)
   @JsonDeserialize(builder = ExponentialBackoff.ExponentialBackoffBuilder.class)
@@ -135,26 +146,31 @@ public class RetryPolicy {
   @EqualsAndHashCode
   public static class ExponentialBackoff implements Backoff {
     /** Base time in seconds to wait between retries for user errors. */
-    @Max(Constants.MAX_ERROR_RETRY_LIMIT_SECS)
-    private final Long errorRetryBackoffInSecs;
+    private final ParsableLong errorRetryBackoffInSecs;
 
     /** Base exponent. */
-    private final Integer errorRetryExponent;
+    private final ParsableLong errorRetryExponent;
 
     /** Max time in seconds to wait between retries for user errors. */
-    @Max(Constants.MAX_ERROR_RETRY_LIMIT_SECS)
-    private final Long errorRetryLimitInSecs;
+    private final ParsableLong errorRetryLimitInSecs;
 
     /** Base time in seconds to wait between retries for platform errors. */
-    @Max(Constants.MAX_PLATFORM_RETRY_LIMIT_SECS)
-    private final Long platformRetryBackoffInSecs;
+    private final ParsableLong platformRetryBackoffInSecs;
 
     /** Base exponent for platform errors. */
-    private final Integer platformRetryExponent;
+    private final ParsableLong platformRetryExponent;
 
     /** Max time in seconds to wait between retries for platform errors. */
-    @Max(Constants.MAX_PLATFORM_RETRY_LIMIT_SECS)
-    private final Long platformRetryLimitInSecs;
+    private final ParsableLong platformRetryLimitInSecs;
+
+    /** Base time in seconds to wait between retries for timeout errors. */
+    private final ParsableLong timeoutRetryBackoffInSecs;
+
+    /** Base exponent for timeout errors. */
+    private final ParsableLong timeoutRetryExponent;
+
+    /** Max time in seconds to wait between retries for timeout errors. */
+    private final ParsableLong timeoutRetryLimitInSecs;
 
     @Override
     public BackoffPolicyType getType() {
@@ -163,15 +179,29 @@ public class RetryPolicy {
 
     @Override
     public int getNextRetryDelayForUserError(long errorRetries) {
-      long waitVal = (long) (errorRetryBackoffInSecs * Math.pow(errorRetryExponent, errorRetries));
-      return (int) Math.min(waitVal, errorRetryLimitInSecs);
+      long waitVal =
+          (long)
+              (errorRetryBackoffInSecs.getLong()
+                  * Math.pow(errorRetryExponent.getLong(), errorRetries));
+      return (int) Math.min(waitVal, errorRetryLimitInSecs.getLong());
     }
 
     @Override
     public int getNextRetryDelayForPlatformError(long platformRetries) {
       long waitVal =
-          (long) (platformRetryBackoffInSecs * Math.pow(platformRetryExponent, platformRetries));
-      return (int) Math.min(waitVal, platformRetryLimitInSecs);
+          (long)
+              (platformRetryBackoffInSecs.getLong()
+                  * Math.pow(platformRetryExponent.getLong(), platformRetries));
+      return (int) Math.min(waitVal, platformRetryLimitInSecs.getLong());
+    }
+
+    @Override
+    public int getNextRetryDelayForTimeoutError(long timeoutRetries) {
+      long waitVal =
+          (long)
+              (timeoutRetryBackoffInSecs.getLong()
+                  * Math.pow(timeoutRetryExponent.getLong(), timeoutRetries));
+      return (int) Math.min(waitVal, timeoutRetryLimitInSecs.getLong());
     }
 
     @Override
@@ -203,31 +233,50 @@ public class RetryPolicy {
         exponentialBackoffBuilder.platformRetryExponent =
             defaultExponentialBackoff.platformRetryExponent;
       }
+      if (exponentialBackoffBuilder.timeoutRetryBackoffInSecs == null) {
+        exponentialBackoffBuilder.timeoutRetryBackoffInSecs =
+            defaultExponentialBackoff.timeoutRetryBackoffInSecs;
+      }
+      if (exponentialBackoffBuilder.timeoutRetryLimitInSecs == null) {
+        exponentialBackoffBuilder.timeoutRetryLimitInSecs =
+            defaultExponentialBackoff.timeoutRetryLimitInSecs;
+      }
+      if (exponentialBackoffBuilder.timeoutRetryExponent == null) {
+        exponentialBackoffBuilder.timeoutRetryExponent =
+            defaultExponentialBackoff.timeoutRetryExponent;
+      }
       return exponentialBackoffBuilder.build();
     }
 
     /** builder class for lombok and jackson. */
     @JsonPOJOBuilder(withPrefix = "")
-    @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
     public static final class ExponentialBackoffBuilder {}
   }
 
   /** Fixed Backoff. */
   @Builder(toBuilder = true)
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonPropertyOrder(
-      value = {"error_retry_backoff_in_secs", "platform_retry_backoff_in_secs"},
+      value = {
+        "error_retry_backoff_in_secs",
+        "platform_retry_backoff_in_secs",
+        "timeout_retry_backoff_in_secs"
+      },
       alphabetic = true)
   @JsonDeserialize(builder = FixedBackoff.FixedBackoffBuilder.class)
   @Getter
   @EqualsAndHashCode
   public static class FixedBackoff implements Backoff {
     /** Constant wait between error retries. */
-    private final Long errorRetryBackoffInSecs;
+    private final ParsableLong errorRetryBackoffInSecs;
 
     /** Constant wait between platform retries. */
-    private final Long platformRetryBackoffInSecs;
+    private final ParsableLong platformRetryBackoffInSecs;
+
+    /** Constant wait between timeout retries. */
+    private final ParsableLong timeoutRetryBackoffInSecs;
 
     @Override
     public BackoffPolicyType getType() {
@@ -236,12 +285,17 @@ public class RetryPolicy {
 
     @Override
     public int getNextRetryDelayForUserError(long errorRetries) {
-      return errorRetryBackoffInSecs.intValue();
+      return errorRetryBackoffInSecs.asInt();
     }
 
     @Override
     public int getNextRetryDelayForPlatformError(long platformRetries) {
-      return platformRetryBackoffInSecs.intValue();
+      return platformRetryBackoffInSecs.asInt();
+    }
+
+    @Override
+    public int getNextRetryDelayForTimeoutError(long timeoutRetries) {
+      return timeoutRetryBackoffInSecs.asInt();
     }
 
     @Override
@@ -255,17 +309,21 @@ public class RetryPolicy {
         fixedBackoffBuilder.platformRetryBackoffInSecs =
             defaultFixedBackoff.platformRetryBackoffInSecs;
       }
+      if (fixedBackoffBuilder.timeoutRetryBackoffInSecs == null) {
+        fixedBackoffBuilder.timeoutRetryBackoffInSecs =
+            defaultFixedBackoff.timeoutRetryBackoffInSecs;
+      }
       return fixedBackoffBuilder.build();
     }
 
     /** builder class for lombok and jackson. */
     @JsonPOJOBuilder(withPrefix = "")
-    @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
     public static final class FixedBackoffBuilder {}
   }
 
   /** builder class for lombok and jackson. */
   @JsonPOJOBuilder(withPrefix = "")
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   public static final class RetryPolicyBuilder {}
 }

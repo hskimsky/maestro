@@ -13,9 +13,10 @@
 package com.netflix.maestro.validations;
 
 import com.netflix.maestro.models.definition.Alerting;
-import javax.validation.ConstraintValidatorContext;
+import jakarta.validation.ConstraintValidatorContext;
 
 /** Interface for validating an {@link Alerting} object. */
+@FunctionalInterface
 public interface AlertingValidator {
 
   /**

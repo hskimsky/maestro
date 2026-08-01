@@ -18,9 +18,10 @@ import static org.junit.Assert.assertEquals;
 import com.netflix.maestro.AssertHelper;
 import com.netflix.maestro.engine.MaestroEngineBaseTest;
 import com.netflix.maestro.exceptions.MaestroInvalidExpressionException;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Collections;
-import org.joda.time.DateTime;
-import org.joda.time.DateTimeZone;
+import java.util.HashMap;
 import org.junit.Test;
 
 public class ExprEvaluatorTest extends MaestroEngineBaseTest {
@@ -52,7 +53,10 @@ public class ExprEvaluatorTest extends MaestroEngineBaseTest {
   @Test
   public void testTimeApis() {
     long expected =
-        new DateTime(2005, 3, 26, 20, 0, 0, 0, DateTimeZone.UTC).plusHours(2).getMillis();
+        ZonedDateTime.of(2005, 3, 26, 20, 0, 0, 0, ZoneId.of("UTC"))
+            .plusHours(2)
+            .toInstant()
+            .toEpochMilli();
     assertEquals(
         expected,
         evaluator.eval(
@@ -79,5 +83,17 @@ public class ExprEvaluatorTest extends MaestroEngineBaseTest {
   @Test
   public void testDefaultReturn() {
     assertEquals(1L, evaluator.eval("x = 1", Collections.singletonMap("x", 10)));
+  }
+
+  @Test
+  public void testExtFunction() {
+    assertEquals("\"10\"", evaluator.eval("Util.toJson(x)", Collections.singletonMap("x", "10")));
+    var map = new HashMap<String, Integer>();
+    map.put("foo", 10);
+    assertEquals(
+        "{\"foo\":10}", evaluator.eval("Util.toJson(x)", Collections.singletonMap("x", map)));
+    assertEquals(
+        "[10,20]",
+        evaluator.eval("Util.toJson(x)", Collections.singletonMap("x", new long[] {10, 20})));
   }
 }

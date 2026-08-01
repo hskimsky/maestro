@@ -24,10 +24,8 @@ import com.netflix.maestro.engine.eval.ParamEvaluator;
 import com.netflix.maestro.engine.execution.RunRequest;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
 import com.netflix.maestro.engine.params.ParamsManager;
-import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
 import com.netflix.maestro.engine.transformation.DagTranslator;
 import com.netflix.maestro.exceptions.MaestroInternalError;
-import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.definition.RunStrategy;
 import com.netflix.maestro.models.definition.Workflow;
@@ -56,7 +54,6 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
   @Mock private ParamEvaluator paramEvaluator;
   @Mock private DagTranslator dagTranslator;
   @Mock private MaestroParamExtensionRepo extensionRepo;
-  @Mock private MaestroJobEventPublisher maestroJobEventPublisher;
   private WorkflowHelper workflowHelper;
   private WorkflowDefinition definition;
   private WorkflowInstance instance;
@@ -64,8 +61,7 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
   @Before
   public void setup() throws IOException {
     workflowHelper =
-        new WorkflowHelper(
-            paramsManager, paramEvaluator, dagTranslator, extensionRepo, maestroJobEventPublisher);
+        new WorkflowHelper(paramsManager, paramEvaluator, dagTranslator, extensionRepo, 10);
     definition =
         loadObject(
             "fixtures/workflows/definition/sample-minimal-wf.json", WorkflowDefinition.class);
@@ -81,20 +77,27 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
   @Test
   public void testGetRunStrategy() throws IOException {
     assertNull(definition.getPropertiesSnapshot().getRunStrategy());
-    assertEquals(definition.getRunStrategyOrDefault().getRule(), RunStrategy.Rule.SEQUENTIAL);
-    assertEquals(definition.getRunStrategyOrDefault(), Defaults.DEFAULT_RUN_STRATEGY);
+    assertEquals(RunStrategy.Rule.SEQUENTIAL, definition.getRunStrategyOrDefault().getRule());
+    assertEquals(Defaults.DEFAULT_RUN_STRATEGY, definition.getRunStrategyOrDefault());
     WorkflowDefinition sequential =
         loadObject(
             "fixtures/workflows/definition/sample-minimal-wf-run-strategy-sequential.json",
             WorkflowDefinition.class);
     assertEquals(
-        sequential.getPropertiesSnapshot().getRunStrategy().getRule(), RunStrategy.Rule.SEQUENTIAL);
+        RunStrategy.Rule.SEQUENTIAL, sequential.getPropertiesSnapshot().getRunStrategy().getRule());
     WorkflowDefinition parallel =
         loadObject(
             "fixtures/workflows/definition/sample-minimal-wf-run-strategy-parallel.json",
             WorkflowDefinition.class);
     assertEquals(
-        parallel.getPropertiesSnapshot().getRunStrategy().getRule(), RunStrategy.Rule.PARALLEL);
+        RunStrategy.Rule.PARALLEL, parallel.getPropertiesSnapshot().getRunStrategy().getRule());
+    WorkflowDefinition serialLatestOnly =
+        loadObject(
+            "fixtures/workflows/definition/sample-minimal-wf-run-strategy-serial-latest-only.json",
+            WorkflowDefinition.class);
+    assertEquals(
+        RunStrategy.Rule.SERIAL_LATEST_ONLY,
+        serialLatestOnly.getPropertiesSnapshot().getRunStrategy().getRule());
   }
 
   @Test
@@ -112,6 +115,7 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
     assertEquals(12345L, instance.getInternalId().longValue());
     assertNotNull(instance.getParams());
     assertNotNull(instance.getWorkflowUuid());
+    assertEquals(10, instance.getGroupInfo());
     Mockito.verify(paramsManager, Mockito.times(1)).generateMergedWorkflowParams(any(), any());
   }
 
@@ -123,12 +127,14 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
         RunRequest.builder()
             .initiator(initiator)
             .currentPolicy(RunPolicy.START_FRESH_NEW_RUN)
+            .groupInfo(8L)
             .build();
     Workflow workflow = definition.getWorkflow().toBuilder().instanceStepConcurrency(20L).build();
     WorkflowInstance instance =
         workflowHelper.createWorkflowInstance(workflow, 12345L, 1, new RunProperties(), request);
     assertNull(instance.getRuntimeWorkflow().getInstanceStepConcurrency());
     assertEquals(12345L, instance.getInternalId().longValue());
+    assertEquals(8, instance.getGroupInfo());
 
     request =
         RunRequest.builder()
@@ -254,6 +260,8 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
     assertEquals(instance.getWorkflowVersionId(), summary.getWorkflowVersionId());
     assertEquals(instance.getCreateTime(), summary.getCreationTime());
     assertEquals(instance.getInternalId(), summary.getInternalId());
+    assertEquals(instance.getGroupInfo(), summary.getGroupInfo());
+    assertEquals(definition.getWorkflow().getDag().keySet(), summary.getStepMap().keySet());
   }
 
   @Test
@@ -266,8 +274,10 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
     assertNull(summary.getInstanceStepConcurrency());
 
     instance.getRunProperties().setStepConcurrency(10L);
+    instance.setGroupInfo(8L);
     summary = workflowHelper.createWorkflowSummaryFromInstance(instance);
     assertNull(summary.getInstanceStepConcurrency());
+    assertEquals(8, summary.getGroupInfo());
 
     // use runtime workflow instance_step_concurrency
     instance.setRuntimeWorkflow(
@@ -327,20 +337,5 @@ public class WorkflowHelperTest extends MaestroEngineBaseTest {
         instance.getAggregatedInfo().getStepAggregatedViews());
     assertEquals(
         WorkflowInstance.Status.FAILED, instance.getAggregatedInfo().getWorkflowInstanceStatus());
-  }
-
-  @Test
-  public void testPublishStartWorkflowEvent() {
-    workflowHelper.publishStartWorkflowEvent("foo", false);
-    Mockito.verify(maestroJobEventPublisher, Mockito.times(0)).publishOrThrow(any());
-    workflowHelper.publishStartWorkflowEvent(null, true);
-    Mockito.verify(maestroJobEventPublisher, Mockito.times(0)).publishOrThrow(any());
-    workflowHelper.publishStartWorkflowEvent("", true);
-    Mockito.verify(maestroJobEventPublisher, Mockito.times(0)).publishOrThrow(any());
-    workflowHelper.publishStartWorkflowEvent(
-        Constants.FOREACH_INLINE_WORKFLOW_PREFIX + "foo", true);
-    Mockito.verify(maestroJobEventPublisher, Mockito.times(0)).publishOrThrow(any());
-    workflowHelper.publishStartWorkflowEvent("foo", true);
-    Mockito.verify(maestroJobEventPublisher, Mockito.times(1)).publishOrThrow(any());
   }
 }

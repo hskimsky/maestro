@@ -14,7 +14,6 @@ package com.netflix.maestro.engine.execution;
 
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.annotations.SuppressFBWarnings;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.api.RestartPolicy;
 import com.netflix.maestro.models.artifact.Artifact;
@@ -28,6 +27,7 @@ import com.netflix.maestro.models.instance.RunPolicy;
 import com.netflix.maestro.models.instance.WorkflowInstance;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -56,6 +56,7 @@ public class RunRequest {
 
   @Nullable private final List<Tag> runtimeTags;
   @Nullable private final String correlationId;
+  @Nullable private final Long groupInfo;
   @Nullable private final Long instanceStepConcurrency; // null means unset and disabled
   @Nullable private final Map<String, ParamDefinition> runParams;
   @Nullable private final Map<String, Map<String, ParamDefinition>> stepRunParams;
@@ -70,7 +71,7 @@ public class RunRequest {
     Checks.checkTrue(
         config != null && !ObjectHelper.isCollectionEmptyOrNull(config.getRestartPath()),
         "Cannot get restart info in empty restart configuration");
-    return config.getRestartPath().get(config.getRestartPath().size() - 1);
+    return config.getRestartPath().getLast();
   }
 
   /** Static util method to extract the second to the last node from the restart path. */
@@ -120,7 +121,7 @@ public class RunRequest {
     if (restartConfig != null) {
       // still along restart path and not reach the downstream
       if (currentStepId.equals(getRestartStepId()) && restartConfig.getRestartPath().size() > 1) {
-        restartConfig.getRestartPath().remove(restartConfig.getRestartPath().size() - 1);
+        restartConfig.getRestartPath().removeLast();
         validateIdentity(toRestart);
         if (restartConfig.getRestartPath().size() == 1) {
           this.currentPolicy = restartConfig.getRestartPolicy();

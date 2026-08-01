@@ -13,32 +13,35 @@
 package com.netflix.maestro.models.instance;
 
 import java.util.Locale;
+import lombok.Getter;
 
 /** Various step dependency match status. */
+@Getter
 public enum StepDependencyMatchStatus {
   /** MATCHED status indicating that the signal dependency conditions have been fulfilled. */
-  MATCHED("MATCHED"),
+  MATCHED(true),
   /**
    * PENDING status indicating that the step is waiting for signal dependency conditions to be
    * fulfilled.
    */
-  PENDING("PENDING"),
+  PENDING(false),
   /** SKIPPED status indicating that conditions are skipped by a BYPASS_STEP_DEPENDENCIES action. */
-  SKIPPED("SKIPPED");
-
+  SKIPPED(true),
   /**
-   * getter for status.
-   *
-   * @return status string
+   * CANCELED status indicating that the owning step reached a terminal state while the dependency
+   * was still pending, so it can no longer be matched.
    */
-  public String getStatus() {
-    return this.status;
-  }
+  CANCELED(false),
+  /**
+   * FAILED status indicating that resolving the dependency raised a non-retryable error, carried in
+   * the dependency details.
+   */
+  FAILED(false);
 
-  private final String status;
+  private final boolean done;
 
-  StepDependencyMatchStatus(String status) {
-    this.status = status;
+  StepDependencyMatchStatus(boolean done) {
+    this.done = done;
   }
 
   /**

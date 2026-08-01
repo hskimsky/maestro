@@ -16,30 +16,31 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.exceptions.MaestroInvalidStatusException;
 import com.netflix.maestro.models.artifact.Artifact;
 import com.netflix.maestro.models.definition.RetryPolicy;
 import com.netflix.maestro.models.definition.Step;
-import com.netflix.maestro.models.definition.StepDependencyType;
-import com.netflix.maestro.models.definition.StepOutputsDefinition;
 import com.netflix.maestro.models.definition.TagList;
 import com.netflix.maestro.models.definition.User;
+import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.Parameter;
+import com.netflix.maestro.models.signal.SignalDependencies;
+import com.netflix.maestro.models.signal.SignalOutputs;
 import com.netflix.maestro.models.timeline.Timeline;
 import com.netflix.maestro.validations.TagListConstraint;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import java.util.Locale;
 import java.util.Map;
-import javax.validation.Valid;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.Getter;
 
 /** Step instance data model. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -53,16 +54,19 @@ import lombok.Getter;
       "correlation_id",
       "step_instance_id",
       "workflow_version_id",
+      "group_info",
       "owner",
       "definition",
       "tags",
+      "step_run_params",
+      "restart_config",
       "params",
       "transition",
       "step_retry",
       "timeout_in_millis",
       "runtime_state",
-      "dependencies",
-      "outputs",
+      "signal_dependencies",
+      "signal_outputs",
       "artifacts",
       "timeline"
     },
@@ -92,6 +96,9 @@ public class StepInstance {
   @Min(1)
   private long workflowVersionId; // version id of baseline workflow
 
+  @Min(1)
+  private long groupInfo; // used to derive the group id for the step instance
+
   // required owner from workflow instance properties snapshot.
   @Valid @NotNull private User owner;
 
@@ -112,8 +119,8 @@ public class StepInstance {
 
   @Valid @NotNull private StepRuntimeState runtimeState;
 
-  @Valid private Map<StepDependencyType, StepDependencies> dependencies;
-  @Valid private Map<StepOutputsDefinition.StepOutputType, StepOutputs> outputs;
+  @Valid private SignalDependencies signalDependencies;
+  @Valid private SignalOutputs signalOutputs;
 
   @JsonInclude(JsonInclude.Include.NON_EMPTY)
   @Valid
@@ -122,6 +129,9 @@ public class StepInstance {
   @JsonInclude(JsonInclude.Include.NON_DEFAULT)
   @Valid
   private Timeline timeline;
+
+  @Nullable private Map<String, ParamDefinition> stepRunParams;
+  @Nullable private RestartConfig restartConfig;
 
   /** Enrich step instance data for external API endpoints. */
   @JsonIgnore
@@ -137,13 +147,8 @@ public class StepInstance {
     return String.format("[%s][%s][%s][%s]", workflowId, workflowInstanceId, workflowRunId, stepId);
   }
 
-  @JsonIgnore
-  public StepDependencies getSignalDependencies() {
-    return dependencies != null ? dependencies.get(StepDependencyType.SIGNAL) : null;
-  }
-
   /** step retry info. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonPropertyOrder(
       value = {
@@ -151,6 +156,8 @@ public class StepInstance {
         "error_retry_limit",
         "platform_retries",
         "platform_retry_limit",
+        "timeout_retries",
+        "timeout_retry_limit",
         "manual_retries",
         "retryable",
         "backoff"
@@ -162,6 +169,8 @@ public class StepInstance {
     private long errorRetryLimit;
     private long platformRetries; // retry count due to platform failure
     private long platformRetryLimit;
+    private long timeoutRetries; // retry count due to timeout failure
+    private long timeoutRetryLimit;
     private long manualRetries; // retry count due to manual api call to restart
     private boolean retryable = true; // mark if the step is retryable by the system
     private RetryPolicy.Backoff backoff;
@@ -176,12 +185,19 @@ public class StepInstance {
       return platformRetries >= platformRetryLimit || !retryable;
     }
 
+    /** check if reaching timeout retry limit. */
+    public boolean hasReachedTimeoutRetryLimit() {
+      return timeoutRetries >= timeoutRetryLimit || !retryable;
+    }
+
     /** increment corresponding retry count based on status. */
     public void incrementByStatus(Status status) {
       if (status == Status.USER_FAILED) {
         errorRetries++;
       } else if (status == Status.PLATFORM_FAILED) {
         platformRetries++;
+      } else if (status == Status.TIMEOUT_FAILED) {
+        timeoutRetries++;
       } else if (status.isRestartable()) {
         manualRetries++;
       } else {
@@ -193,14 +209,16 @@ public class StepInstance {
     /**
      * Get next retry delay based on error and configured retry policy.
      *
-     * @param status status
-     * @return delay for the next attempt
+     * @param status the step instance status
+     * @return the next retry delay in secs.
      */
     public int getNextRetryDelay(Status status) {
       if (status == Status.USER_FAILED) {
         return backoff.getNextRetryDelayForUserError(errorRetries);
       } else if (status == Status.PLATFORM_FAILED) {
         return backoff.getNextRetryDelayForPlatformError(platformRetries);
+      } else if (status == Status.TIMEOUT_FAILED) {
+        return backoff.getNextRetryDelayForTimeoutError(timeoutRetries);
       } else {
         // Not expected to get retry delay for any other errors.
         throw new MaestroInvalidStatusException(
@@ -212,8 +230,9 @@ public class StepInstance {
     public static StepRetry from(@Nullable RetryPolicy policy) {
       RetryPolicy retryPolicy = RetryPolicy.tryMergeWithDefault(policy);
       StepRetry stepRetry = new StepRetry();
-      stepRetry.errorRetryLimit = retryPolicy.getErrorRetryLimit();
-      stepRetry.platformRetryLimit = retryPolicy.getPlatformRetryLimit();
+      stepRetry.errorRetryLimit = retryPolicy.getErrorRetryLimit().getLong();
+      stepRetry.platformRetryLimit = retryPolicy.getPlatformRetryLimit().getLong();
+      stepRetry.timeoutRetryLimit = retryPolicy.getTimeoutRetryLimit().getLong();
       stepRetry.retryable = true;
       stepRetry.backoff = retryPolicy.getBackoff();
       return stepRetry;
@@ -252,9 +271,9 @@ public class StepInstance {
     /** Step is disabled at workflow instance start time, terminal state. */
     DISABLED(true, true, false, false),
     /**
-     * Step should not run and user logic does not run. Maestro runs over this step when its if
-     * condition is false or the workflow is already failed when failure mode is FAIL_AFTER_RUNNING.
-     * Users can discard steps with this status. terminal state.
+     * Step should not run and user logic does not run. Maestro runs over this step when condition
+     * is false or the workflow is already failed when failure mode is FAIL_AFTER_RUNNING. Users can
+     * discard steps with this status. terminal state.
      */
     UNSATISFIED(true, true, false, false),
     /** Step is skipped by users at runtime, terminal state. */
@@ -281,7 +300,9 @@ public class StepInstance {
 
     /** Step is stopped by a user or the workflow, terminal state. */
     STOPPED(true, false, false, false),
-    /** Step is timed out by the system, terminal state. */
+    /** Step is failed due to execution timeout error, terminal state. */
+    TIMEOUT_FAILED(true, false, true, true),
+    /** Step is fatally timed out by the system, terminal state. */
     TIMED_OUT(true, false, false, false);
 
     @JsonIgnore private final boolean terminal; // if it is terminal

@@ -13,10 +13,10 @@
 package com.netflix.maestro.models.definition;
 
 import com.netflix.maestro.MaestroBaseTest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
 import java.util.Set;
-import javax.validation.ConstraintViolation;
-import javax.validation.Validation;
-import javax.validation.Validator;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -33,7 +33,7 @@ public class ForeachStepTest extends MaestroBaseTest {
   @Test
   public void testSerde() throws Exception {
     ForeachStep def =
-        (ForeachStep) loadObject("fixtures/foreachsteps/sample-foreach-step.json", Step.class);
+        (ForeachStep) loadObject("fixtures/typedsteps/sample-foreach-step.json", Step.class);
     Assert.assertNotNull(def);
     ForeachStep def2 = (ForeachStep) MAPPER.readValue(MAPPER.writeValueAsString(def), Step.class);
     Assert.assertEquals(def, def2);
@@ -42,7 +42,7 @@ public class ForeachStepTest extends MaestroBaseTest {
   @Test
   public void testConcurrencyValidation() throws Exception {
     ForeachStep def =
-        (ForeachStep) loadObject("fixtures/foreachsteps/sample-foreach-step.json", Step.class);
+        (ForeachStep) loadObject("fixtures/typedsteps/sample-foreach-step.json", Step.class);
     def.setConcurrency(5L);
     Set<ConstraintViolation<ForeachStep>> violations = validator.validate(def);
     Assert.assertEquals(0, violations.size());
@@ -56,7 +56,7 @@ public class ForeachStepTest extends MaestroBaseTest {
   @Test
   public void testConcurrencyValidationNull() throws Exception {
     ForeachStep def =
-        (ForeachStep) loadObject("fixtures/foreachsteps/sample-foreach-step.json", Step.class);
+        (ForeachStep) loadObject("fixtures/typedsteps/sample-foreach-step.json", Step.class);
     def.setConcurrency(null);
     Set<ConstraintViolation<ForeachStep>> violations = validator.validate(def);
     Assert.assertEquals(0, violations.size());

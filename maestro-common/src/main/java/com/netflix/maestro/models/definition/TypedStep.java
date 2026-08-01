@@ -15,17 +15,17 @@ package com.netflix.maestro.models.definition;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
+import com.netflix.maestro.validations.RetryPolicyConstraint;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 
 /** Step definition for all step types with additional fields. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -35,12 +35,13 @@ import lombok.ToString;
       "transition",
       "type",
       "sub_type",
+      "sub_type_version",
       "failure_mode",
       "retry_policy",
       "tags",
       "timeout",
-      "dependencies",
-      "outputs",
+      "signal_dependencies",
+      "signal_outputs",
       "params"
     },
     alphabetic = true)
@@ -55,8 +56,10 @@ public final class TypedStep extends AbstractStep {
   @Getter(onMethod = @__({@Override}))
   private String subType; // optional
 
+  private String subTypeVersion; // optional
+
   @JsonProperty
   @Getter(onMethod = @__({@Override}))
-  @Valid
+  @RetryPolicyConstraint
   private RetryPolicy retryPolicy;
 }

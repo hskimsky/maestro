@@ -12,6 +12,7 @@
  */
 package com.netflix.maestro.engine.steps;
 
+import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
 import com.netflix.maestro.models.Constants;
@@ -21,14 +22,12 @@ import com.netflix.maestro.models.definition.Tag;
 import com.netflix.maestro.models.definition.User;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.timeline.TimelineEvent;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import javax.validation.constraints.NotNull;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 
 /**
  * Step runtime implementation. It is expected to be stateless and thread safe.
@@ -36,22 +35,41 @@ import lombok.Getter;
  * <p>The state should not be kept in instance variables within StepRuntime.
  *
  * <p>The whole execution offers at-least-once guarantee. Therefore, the logic implemented here
- * should be idempotent. For example, Periodically check sleep time or check titus container status.
+ * should be idempotent. For example, Periodically check sleep time or check the container status.
  */
 public interface StepRuntime {
   /** Maestro system user. */
   User SYSTEM_USER = User.create(Constants.MAESTRO_QUALIFIER);
 
-  /** Step runtime result. */
-  @Getter
-  @AllArgsConstructor
-  class Result {
-    @NotNull private final State state;
-    private final Map<String, Artifact> artifacts;
-    private final List<TimelineEvent> timeline;
+  /**
+   * Step runtime result.
+   *
+   * <p>Step runtime can use nextPollingDelayInMillis to control the polling interval for the next
+   * call. Note that this is just a hint. The workflow engine may choose to ignore it, e.g. using a
+   * different delay during retry backoff.
+   *
+   * @param state state of the step runtime.
+   * @param artifacts artifacts to persist
+   * @param timeline timeline to persist
+   * @param nextPollingDelayInMillis polling interval for the next execute() call.
+   */
+  record Result(
+      @NotNull State state,
+      Map<String, Artifact> artifacts,
+      List<TimelineEvent> timeline,
+      @Nullable Long nextPollingDelayInMillis) {
+
+    public Result(
+        @NotNull State state, Map<String, Artifact> artifacts, List<TimelineEvent> timeline) {
+      this(state, artifacts, timeline, null);
+    }
 
     public static Result of(State state) {
       return new Result(state, new LinkedHashMap<>(), new ArrayList<>());
+    }
+
+    public static Result of(State state, Long nextPollingDelayInMillis) {
+      return new Result(state, new LinkedHashMap<>(), new ArrayList<>(), nextPollingDelayInMillis);
     }
 
     public boolean shouldPersist() {
@@ -118,7 +136,7 @@ public interface StepRuntime {
    * Customized step execution logic.
    *
    * <p>While the step status is RUNNING, the code in execute() will be called periodically with a
-   * preset polling interval. Additionally, if the execution throws an exception, the execute will
+   * preset polling interval. Additionally, if the execution throws an exception, the execution will
    * be retried as another step instance run.
    *
    * <p>The input data are a copy of the original summary data. Any changes on them will be
@@ -164,9 +182,9 @@ public interface StepRuntime {
   /**
    * Inject runtime parameters based on the step definition data.
    *
-   * @return a collections of runtime generated parameters to inject
    * @param workflowSummary workflow summary
    * @param step step definition
+   * @return an immutable map of runtime generated parameters to inject
    */
   default Map<String, ParamDefinition> injectRuntimeParams(
       WorkflowSummary workflowSummary, Step step) {
@@ -176,9 +194,11 @@ public interface StepRuntime {
   /**
    * Inject runtime tags from the step runtime.
    *
-   * @return a collections of runtime generated tags to inject
+   * @param workflowSummary workflow summary
+   * @param step step definition
+   * @return an immutable list of runtime generated tags to inject
    */
-  default List<Tag> injectRuntimeTags() {
+  default List<Tag> injectRuntimeTags(WorkflowSummary workflowSummary, Step step) {
     return Collections.emptyList();
   }
 }

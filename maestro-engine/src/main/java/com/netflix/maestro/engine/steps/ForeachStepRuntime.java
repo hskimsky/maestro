@@ -24,7 +24,6 @@ import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
 import com.netflix.maestro.engine.handlers.WorkflowActionHandler;
 import com.netflix.maestro.engine.properties.ForeachStepRuntimeProperties;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.engine.utils.StepHelper;
 import com.netflix.maestro.exceptions.MaestroInternalError;
 import com.netflix.maestro.exceptions.MaestroRetryableError;
@@ -38,7 +37,6 @@ import com.netflix.maestro.models.definition.Step;
 import com.netflix.maestro.models.definition.Tag;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.models.error.Details;
-import com.netflix.maestro.models.initiator.UpstreamInitiator;
 import com.netflix.maestro.models.instance.ForeachAction;
 import com.netflix.maestro.models.instance.ForeachStepOverview;
 import com.netflix.maestro.models.instance.RestartConfig;
@@ -51,10 +49,12 @@ import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.models.timeline.TimelineDetailsEvent;
 import com.netflix.maestro.models.timeline.TimelineEvent;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
+import com.netflix.maestro.queue.MaestroQueueSystem;
+import com.netflix.maestro.queue.models.MessageDto;
 import com.netflix.maestro.utils.Checks;
-import com.netflix.maestro.utils.HashHelper;
-import com.netflix.maestro.utils.IdHelper;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -80,16 +80,18 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @AllArgsConstructor
+@SuppressWarnings("PMD.ExhaustiveSwitchHasDefault")
 public class ForeachStepRuntime implements StepRuntime {
   private static final String FOREACH_TAG_NAME = Constants.FOREACH_INLINE_WORKFLOW_PREFIX;
   private static final String LOOP_PARAMS_NAME = Constants.LOOP_PARAMS_NAME;
   private static final String INDEX_PARAM_NAME = Constants.INDEX_PARAM_NAME;
-  private static final int FOREACH_ITERATION_LIMIT = Constants.FOREACH_ITERATION_LIMIT;
+  private static final int FOREACH_ITERATION_LIMIT = Constants.ITERATION_LIMIT;
 
   private final WorkflowActionHandler actionHandler;
   private final MaestroWorkflowInstanceDao instanceDao;
   private final MaestroStepInstanceDao stepInstanceDao;
   private final MaestroStepInstanceActionDao actionDao;
+  private final MaestroQueueSystem queueSystem;
   private final InstanceStepConcurrencyHandler instanceStepConcurrencyHandler;
   private final ForeachStepRuntimeProperties properties;
 
@@ -103,6 +105,9 @@ public class ForeachStepRuntime implements StepRuntime {
           State.DONE,
           Collections.singletonMap(artifact.getType().key(), artifact),
           Collections.emptyList());
+    } catch (MaestroRetryableError mre) {
+      // retryable error, will retry by the parent logics
+      throw mre;
     } catch (Exception e) {
       LOG.error(
           "Failed to start foreach workflow step runtime for {}{}",
@@ -124,14 +129,15 @@ public class ForeachStepRuntime implements StepRuntime {
     int total = getLoopParamsTotalCount(runtimeSummary);
     Checks.checkTrue(
         total <= FOREACH_ITERATION_LIMIT,
-        "Foreach iteration number %s is over the loop size limit %s for step {}{}",
+        "Foreach iteration number [%s] is over the loop size limit [%s] for step %s%s",
         total,
         FOREACH_ITERATION_LIMIT,
         workflowSummary.getIdentity(),
         runtimeSummary.getIdentity());
 
     ForeachArtifact artifact = new ForeachArtifact();
-    artifact.setForeachWorkflowId(generateForeachWorkflowId(workflowSummary, runtimeSummary));
+    artifact.setForeachWorkflowId(
+        StepHelper.generateInlineWorkflowId(workflowSummary, runtimeSummary));
     artifact.setForeachIdentity(workflowSummary.getIdentity() + runtimeSummary.getIdentity());
     artifact.setForeachRunId(1L);
 
@@ -238,7 +244,7 @@ public class ForeachStepRuntime implements StepRuntime {
     WorkflowRollupOverview aggregated = new WorkflowRollupOverview();
 
     if (ObjectHelper.isCollectionEmptyOrNull(iterationsIds)
-        || Checks.isNullOrEmpty(foreachWorkflowId)) {
+        || ObjectHelper.isNullOrEmpty(foreachWorkflowId)) {
       return aggregated;
     }
 
@@ -283,26 +289,6 @@ public class ForeachStepRuntime implements StepRuntime {
       }
     }
     return total;
-  }
-
-  /** Use the md5 of workflow id, instance id, and step id as the generated inline workflow id. */
-  private String generateForeachWorkflowId(
-      WorkflowSummary workflowSummary, StepRuntimeSummary runtimeSummary) {
-    long instanceId = workflowSummary.getWorkflowInstanceId();
-    if (workflowSummary.getInitiator().getType().isInline()) {
-      instanceId =
-          ((UpstreamInitiator) workflowSummary.getInitiator()).getNonInlineParent().getInstanceId();
-    }
-
-    return String.format(
-        "%s_%s_%s_%s",
-        FOREACH_TAG_NAME,
-        IdHelper.hashKey(workflowSummary.getInternalId()),
-        IdHelper.rangeKey(instanceId),
-        HashHelper.md5(
-            runtimeSummary.getStepId(),
-            String.valueOf(workflowSummary.getWorkflowInstanceId()),
-            workflowSummary.getWorkflowId()));
   }
 
   /** foreach execute to launch and monitor foreach iterations. */
@@ -437,6 +423,12 @@ public class ForeachStepRuntime implements StepRuntime {
           timelineEvent == null
               ? Collections.emptyList()
               : Collections.singletonList(timelineEvent));
+    } catch (MaestroRetryableError mre) {
+      LOG.info("Failed to execute foreach step runtime, will retry", mre);
+      return new Result(
+          State.CONTINUE,
+          Collections.emptyMap(),
+          Collections.singletonList(TimelineDetailsEvent.from(mre.getDetails())));
     } catch (Exception e) {
       LOG.error(
           "Failed to execute foreach workflow step runtime {}{}",
@@ -644,7 +636,8 @@ public class ForeachStepRuntime implements StepRuntime {
                     Collections.singletonList(Tag.create(FOREACH_TAG_NAME)),
                     createForeachRunParams(
                         restartIterationId - 1, workflowSummary, foreachStep, runtimeSummary),
-                    generateDedupKey(restartArtifact, restartIterationId - 1))
+                    generateDedupKey(restartArtifact, restartIterationId - 1),
+                    null)
                 .toBuilder()
                 .restartConfig(foreachAction.getRestartConfig())
                 .build();
@@ -706,9 +699,8 @@ public class ForeachStepRuntime implements StepRuntime {
   /**
    * Launch foreach iterations with {@link ForeachStepRuntimeProperties#getLoopBatchLimit()} size
    * limit. It might break a large batch into small trunks to satisfy {@link
-   * ForeachStepRuntimeProperties#getInsertBatchLimit()} size limit. Additionally, it might send
-   * multiple run job events to satisfy {@link ForeachStepRuntimeProperties#getRunJobBatchLimit()}
-   * size limit. For retryable errors, it returns details. For fatal errors, it throws an exception.
+   * ForeachStepRuntimeProperties#getInsertBatchLimit()} size limit. For retryable errors, it
+   * returns details. For fatal errors, it throws an exception.
    *
    * @param index it will carry the next loop index
    * @return error details.
@@ -741,7 +733,8 @@ public class ForeachStepRuntime implements StepRuntime {
                 runtimeSummary,
                 Collections.singletonList(Tag.create(FOREACH_TAG_NAME)),
                 createForeachRunParams(idx, workflowSummary, step, runtimeSummary),
-                generateDedupKey(artifact, idx));
+                generateDedupKey(artifact, idx),
+                null);
 
         if (instanceStepConcurrencyHandler.addInstance(runRequest)) {
           runRequests.add(runRequest);
@@ -766,8 +759,7 @@ public class ForeachStepRuntime implements StepRuntime {
                 step.getId(),
                 artifact,
                 runRequests,
-                instanceIds,
-                properties.getRunJobBatchLimit());
+                instanceIds);
         if (details.isPresent()) {
           return details;
         } else {
@@ -800,7 +792,7 @@ public class ForeachStepRuntime implements StepRuntime {
         Math.max(0L, concurrencyLimit - nonTerminalCount), properties.getLoopBatchLimit());
   }
 
-  private void refreshIterationOverview(ForeachArtifact artifact) {
+  private Map<Long, Long> refreshIterationOverview(ForeachArtifact artifact) {
     ForeachStepOverview stepOverview = artifact.getForeachOverview();
 
     List<ForeachIterationOverview> restartResults;
@@ -836,7 +828,7 @@ public class ForeachStepRuntime implements StepRuntime {
             false);
 
     if (!results.isEmpty()) {
-      long maxIterationId = results.get(0).getInstanceId(); // results are sorted in DESC;
+      long maxIterationId = results.getFirst().getInstanceId(); // results are sorted in DESC;
       long newCheckpoint =
           results.stream()
               .filter(rs -> !rs.getStatus().isTerminal())
@@ -868,6 +860,11 @@ public class ForeachStepRuntime implements StepRuntime {
                     result.getInstanceId(), result.getStatus(), result.getRollupOverview()));
 
     stepOverview.refreshDetail();
+
+    return restartResults.stream()
+        .collect(
+            Collectors.toMap(
+                ForeachIterationOverview::getInstanceId, ForeachIterationOverview::getRunId));
   }
 
   /**
@@ -957,10 +954,11 @@ public class ForeachStepRuntime implements StepRuntime {
     if (runtimeSummary.getArtifacts().containsKey(Artifact.Type.FOREACH.key())) {
       ForeachArtifact artifact =
           runtimeSummary.getArtifacts().get(Artifact.Type.FOREACH.key()).asForeach();
-      refreshIterationOverview(artifact);
+      var restartRunIdMap = refreshIterationOverview(artifact);
       boolean done = artifact.getForeachOverview().getRunningStatsCount(false) == 0;
       if (!done) {
         tryTerminateQueuedInstancesIfNeeded(artifact);
+        wakeUpUnderlyingActors(workflowSummary.getGroupInfo(), artifact, restartRunIdMap);
         throw new MaestroRetryableError(
             "Termination at foreach step %s%s is not done and will retry it.",
             workflowSummary.getIdentity(), runtimeSummary.getIdentity());
@@ -998,6 +996,26 @@ public class ForeachStepRuntime implements StepRuntime {
           "Foreach step terminated [{}] queued foreach instances with foreach artifact{}.",
           totalTerminated,
           artifact);
+    }
+  }
+
+  private void wakeUpUnderlyingActors(
+      long groupInfo, ForeachArtifact artifact, Map<Long, Long> restartRunIdMap) {
+    if (artifact.getForeachOverview().getDetails() != null) {
+      var instanceRunIds =
+          artifact.getForeachOverview().getDetails().flatten(e -> !e.isTerminal()).values().stream()
+              .flatMap(Collection::stream)
+              .collect(Collectors.toMap(e -> e, v -> artifact.getForeachRunId()));
+      restartRunIdMap.forEach(
+          (k, v) -> {
+            if (instanceRunIds.containsKey(k)) {
+              instanceRunIds.put(k, v);
+            }
+          });
+      var msg =
+          MessageDto.createMessageForWakeUp(
+              artifact.getForeachWorkflowId(), groupInfo, instanceRunIds);
+      queueSystem.notify(msg);
     }
   }
 }

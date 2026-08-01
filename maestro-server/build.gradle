@@ -1,5 +1,5 @@
 plugins {
-    id 'org.springframework.boot' version '2.7.+'
+    id 'org.springframework.boot' version '3.+'
 }
 
 sourceSets {
@@ -15,25 +15,41 @@ configurations {
 }
 
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter-web:2.7.+'
+    implementation 'org.springframework.boot:spring-boot-starter-web:3.+'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator:3.+'
+    implementation 'io.micrometer:micrometer-tracing-bridge-brave:1.+'
+    implementation 'io.swagger.core.v3:swagger-annotations:2.+'
 
     implementation hikaricpDep
     implementation postgresqlDep
     implementation flywayDep
-    implementation 'io.swagger.core.v3:swagger-annotations:2.+'
-    implementation 'org.springframework.cloud:spring-cloud-starter-sleuth:3.+'
+
+    implementation spectatorApiDep
+    implementation jakartaValidationDep
+    implementation bvalJsrDep
     runtimeOnly testcontainerDep
 
     implementation project(':maestro-engine')
     implementation project(':maestro-common')
-    implementation project(':cockroachdb-persistence')
+    implementation project(':maestro-dsl')
+    implementation project(':maestro-flow')
+    implementation project(':maestro-database')
+    implementation project(':maestro-queue')
+    implementation project(':maestro-timetrigger')
+    implementation project(':maestro-signal')
     implementation project(':netflix-sel')
+    implementation project(':maestro-aws')
+    implementation project(':maestro-extensions')
+    implementation project(':maestro-kubernetes')
+    implementation project(':maestro-http')
 
-    testImplementation 'org.springframework.boot:spring-boot-starter-test:2.7.+'
-}
+    implementation('io.fabric8:kubernetes-client:7.+'){
+        exclude group: 'org.slf4j'
+    }
 
-bootRun {
-    jvmArgs += ["-Djava.security.manager=allow"]
+    testImplementation junitDep
+    testImplementation mockitoCoreDep
+    testImplementation(testFixtures(project(':maestro-common')))
 }
 
 checkstyle {

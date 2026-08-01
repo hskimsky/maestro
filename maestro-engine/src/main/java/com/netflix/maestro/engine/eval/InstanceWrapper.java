@@ -26,10 +26,10 @@ import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.trigger.SignalTrigger;
 import com.netflix.maestro.models.trigger.TimeTrigger;
 import com.netflix.maestro.utils.Checks;
+import jakarta.validation.constraints.NotNull;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import javax.validation.constraints.NotNull;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -39,6 +39,7 @@ public class InstanceWrapper {
   @Getter private final boolean isWorkflowParam;
   @Getter @NotNull private final String workflowId;
   @Getter private final Long workflowInstanceId;
+  @Getter private final Long workflowRunId;
   @Getter @NotNull private final Initiator initiator;
   @NotNull private final RunPolicy runPolicy;
   @NotNull private final RunProperties runProperties;
@@ -60,6 +61,7 @@ public class InstanceWrapper {
         .isWorkflowParam(false)
         .workflowId(workflowSummary.getWorkflowId())
         .workflowInstanceId(workflowSummary.getWorkflowInstanceId())
+        .workflowRunId(workflowSummary.getWorkflowRunId())
         .initiator(workflowSummary.getInitiator())
         .runPolicy(workflowSummary.getRunPolicy())
         .runProperties(workflowSummary.getRunProperties())
@@ -121,7 +123,7 @@ public class InstanceWrapper {
 
   String getFirstTimeTriggerTimeZone() {
     if (timeTriggers != null && !timeTriggers.isEmpty()) {
-      return timeTriggers.get(0).getTimezone();
+      return timeTriggers.getFirst().getTimezone();
     }
     return null;
   }
@@ -129,12 +131,24 @@ public class InstanceWrapper {
   void validateSignalName(String signalName) {
     boolean exist = false;
     if (signalTriggers != null && !signalTriggers.isEmpty()) {
-      exist = signalTriggers.stream().anyMatch(s -> s.getDefinition().containsKey(signalName));
+      exist = signalTriggers.stream().anyMatch(s -> s.getDefinitions().containsKey(signalName));
     }
     Checks.checkTrue(
         exist,
         "Signal name [%s] does not exist in the signal trigger definition for workflow [%s]",
         signalName,
+        workflowId);
+  }
+
+  void validateSignalParamName(String paramName) {
+    boolean exist = false;
+    if (signalTriggers != null && !signalTriggers.isEmpty()) {
+      exist = signalTriggers.stream().anyMatch(s -> s.getParams().containsKey(paramName));
+    }
+    Checks.checkTrue(
+        exist,
+        "Signal param name [%s] does not exist in the signal trigger definition for workflow [%s]",
+        paramName,
         workflowId);
   }
 }

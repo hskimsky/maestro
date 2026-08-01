@@ -27,9 +27,15 @@ import com.netflix.maestro.models.Constants;
   @JsonSubTypes.Type(name = "DEFAULT", value = DefaultArtifact.class),
   @JsonSubTypes.Type(name = "SUBWORKFLOW", value = SubworkflowArtifact.class),
   @JsonSubTypes.Type(name = "FOREACH", value = ForeachArtifact.class),
+  @JsonSubTypes.Type(name = "WHILE", value = WhileArtifact.class),
   @JsonSubTypes.Type(name = "TITUS", value = TitusArtifact.class),
-  @JsonSubTypes.Type(name = "NOTEBOOK", value = NotebookArtifact.class)
+  @JsonSubTypes.Type(name = "NOTEBOOK", value = NotebookArtifact.class),
+  @JsonSubTypes.Type(name = "DYNAMIC_OUTPUT", value = DynamicOutputArtifact.class),
+  @JsonSubTypes.Type(name = "KUBERNETES", value = KubernetesArtifact.class),
+  @JsonSubTypes.Type(name = "HTTP", value = HttpArtifact.class),
+  @JsonSubTypes.Type(name = "RETRY", value = RetryArtifact.class),
 })
+@SuppressWarnings("PMD.ImplicitFunctionalInterface")
 public interface Artifact {
   /** Get artifact type info. */
   Type getType();
@@ -42,10 +48,20 @@ public interface Artifact {
     SUBWORKFLOW(Constants.MAESTRO_PREFIX + "subworkflow"),
     /** foreach artifact. */
     FOREACH(Constants.MAESTRO_PREFIX + "foreach"),
+    /** while artifact. */
+    WHILE(Constants.MAESTRO_PREFIX + "while"),
     /** titus artifact. */
     TITUS(Constants.MAESTRO_PREFIX + "titus"),
     /** notebook artifact. */
-    NOTEBOOK(Constants.MAESTRO_PREFIX + "notebook");
+    NOTEBOOK(Constants.MAESTRO_PREFIX + "notebook"),
+    /** dynamic output (e.g. output signal) artifact. */
+    DYNAMIC_OUTPUT(Constants.MAESTRO_PREFIX + "dynamic_output"),
+    /** kubernetes artifact. */
+    KUBERNETES(Constants.MAESTRO_PREFIX + "kubernetes"),
+    /** http artifact. */
+    HTTP(Constants.MAESTRO_PREFIX + "http"),
+    /** retry artifact. */
+    RETRY(Constants.MAESTRO_PREFIX + "retry");
 
     private final String key;
 
@@ -86,6 +102,15 @@ public interface Artifact {
   }
 
   /**
+   * get WhileArtifact type artifact.
+   *
+   * @return concrete artifact object.
+   */
+  default WhileArtifact asWhile() {
+    throw new MaestroInternalError("Artifact type [%s] cannot be used as WHILE", getType());
+  }
+
+  /**
    * get Titus type artifact.
    *
    * @return concrete artifact object.
@@ -101,5 +126,42 @@ public interface Artifact {
    */
   default NotebookArtifact asNotebook() {
     throw new MaestroInternalError("Artifact type [%s] cannot be used as NOTEBOOK", getType());
+  }
+
+  /**
+   * get DynamicOutput type artifact.
+   *
+   * @return concrete artifact object.
+   */
+  default DynamicOutputArtifact asDynamicOutput() {
+    throw new MaestroInternalError(
+        "Artifact type [%s] cannot be used as DYNAMIC_OUTPUT", getType());
+  }
+
+  /**
+   * Get Kubernetes type artifact.
+   *
+   * @return concrete artifact object.
+   */
+  default KubernetesArtifact asKubernetes() {
+    throw new MaestroInternalError("Artifact type [%s] cannot be used as KUBERNETES", getType());
+  }
+
+  /**
+   * Get http type artifact.
+   *
+   * @return concrete artifact object.
+   */
+  default HttpArtifact asHttp() {
+    throw new MaestroInternalError("Artifact type [%s] cannot be used as HTTP", getType());
+  }
+
+  /**
+   * Get Retry type artifact.
+   *
+   * @return concrete artifact object.
+   */
+  default RetryArtifact asRetry() {
+    throw new MaestroInternalError("Artifact type [%s] cannot be used as RETRY", getType());
   }
 }

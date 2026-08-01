@@ -12,9 +12,8 @@
  */
 package com.netflix.maestro.utils;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.netflix.maestro.models.Constants;
-import com.netflix.maestro.models.definition.Duration;
+import com.netflix.maestro.models.definition.ParsableLong;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.Parameter;
 import java.util.Locale;
@@ -23,13 +22,11 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** A parser to parse the duration in string to the duration in milliseconds. */
+/** A parser to parse the duration in string to the duration in numeric format. */
 public final class DurationParser {
 
-  /** Private constructor for utility class. * */
+  /** Private constructor for utility class. */
   private DurationParser() {}
-
-  private static final String PARAM_NAME = "duration_str";
 
   private static final Pattern SCALA_DURATION_REGEX =
       Pattern.compile(
@@ -43,54 +40,50 @@ public final class DurationParser {
         TimeUnit.DAYS, TimeUnit.HOURS, TimeUnit.MINUTES, TimeUnit.SECONDS, TimeUnit.MILLISECONDS
       };
 
-  /** parses the scala duration type and returns timeout duration in milliseconds. */
+  /** parses the scala duration type and returns duration in milliseconds. */
   private static long parseDuration(String duration) {
     Matcher m = SCALA_DURATION_REGEX.matcher(duration.toLowerCase(Locale.ROOT));
     long timeout = 0;
     while (m.find()) {
       for (TimeUnit unit : TIME_UNITS) {
-        long t = Checks.toNumeric(m.group(unit.name())).orElse(0L);
+        long t = ObjectHelper.toNumeric(m.group(unit.name())).orElse(0L);
         timeout += unit.toMillis(t);
       }
     }
     return timeout;
   }
 
-  public static long getDurationInMillis(Duration duration) {
-    JsonNode value = duration.getValue();
-    if (value.isNumber()) {
-      return value.asLong();
+  /** parses the scala duration type and returns duration in seconds. */
+  static long parseDurationInSecs(String duration) {
+    return TimeUnit.MILLISECONDS.toSeconds(parseDuration(duration));
+  }
+
+  /**
+   * Parse the ParsableLong value (default in milliseconds) and returns duration in milliseconds.
+   */
+  public static long getDurationInMillis(ParsableLong duration) {
+    if (duration.isLong()) {
+      return duration.getLong();
     } else {
-      return parseDuration(value.asText());
+      return parseDuration(duration.asString());
     }
   }
 
-  public static long getDurationWithParamInMillis(
-      Duration duration, Function<ParamDefinition, Parameter> paramParser) {
-    JsonNode value = duration.getValue();
-    long timeout;
-    if (value.isNumber()) {
-      timeout = TimeUnit.SECONDS.toMillis(value.asLong());
-    } else {
-      ParamDefinition paramDef = ParamDefinition.buildParamDefinition(PARAM_NAME, value.asText());
-      String durationParam = paramParser.apply(paramDef).asString();
-      timeout =
-          Checks.toNumeric(durationParam)
-              .map(TimeUnit.SECONDS::toMillis)
-              .orElseGet(() -> DurationParser.parseDuration(durationParam));
-    }
+  /**
+   * Parse the ParsableLong value (default in seconds) for timeout and returns duration in
+   * milliseconds.
+   */
+  public static long getTimeoutWithParamInMillis(
+      ParsableLong duration, Function<ParamDefinition, Parameter> paramParser) {
+    long timeout =
+        duration.parseLongWithParam(
+            paramParser, TimeUnit.SECONDS::toMillis, DurationParser::parseDuration);
     Checks.checkTrue(
         timeout > 0 && timeout <= Constants.MAX_TIME_OUT_LIMIT_IN_MILLIS,
         "timeout [%s ms]/[%s] cannot be non-positive or more than system limit: %s days",
         timeout,
-        value,
+        duration,
         TimeUnit.MILLISECONDS.toDays(Constants.MAX_TIME_OUT_LIMIT_IN_MILLIS));
     return timeout;
-  }
-
-  /** checks if given `duration` string matches scala's duration type. */
-  public static boolean validate(String duration) {
-    Matcher m = SCALA_DURATION_REGEX.matcher(duration.toLowerCase(Locale.ROOT));
-    return m.matches();
   }
 }

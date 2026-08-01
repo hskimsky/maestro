@@ -13,6 +13,12 @@
 package com.netflix.maestro.validations;
 
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.utils.MaestroIdNameValidationLimits;
+import jakarta.inject.Inject;
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -20,10 +26,6 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.Locale;
 import java.util.regex.Pattern;
-import javax.validation.Constraint;
-import javax.validation.ConstraintValidator;
-import javax.validation.ConstraintValidatorContext;
-import javax.validation.Payload;
 
 /** Maestro id validation, including workflow id. */
 @Documented
@@ -44,6 +46,8 @@ public @interface MaestroIdConstraint {
   class MaestroIdValidator implements ConstraintValidator<MaestroIdConstraint, String> {
     private static final Pattern ID_PATTERN = Pattern.compile("[_a-zA-Z0-9][.\\-_a-zA-Z0-9]*+");
 
+    @Inject private MaestroIdNameValidationLimits maestroIdNameValidationLimits;
+
     @Override
     public void initialize(MaestroIdConstraint constraint) {}
 
@@ -56,12 +60,17 @@ public @interface MaestroIdConstraint {
         return false;
       }
 
-      if (id.length() > Constants.ID_LENGTH_LIMIT) {
+      MaestroIdNameValidationLimits limits =
+          maestroIdNameValidationLimits != null
+              ? maestroIdNameValidationLimits
+              : MaestroIdNameValidationLimits.DEFAULTS;
+      int idLimit = limits.getIdLengthLimit();
+      if (id.length() > idLimit) {
         context
             .buildConstraintViolationWithTemplate(
                 String.format(
                     "[maestro id] cannot be more than id length limit %s - rejected length is [%s] for value [%s]",
-                    Constants.ID_LENGTH_LIMIT, id.length(), id))
+                    idLimit, id.length(), id))
             .addConstraintViolation();
         return false;
       }

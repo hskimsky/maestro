@@ -12,7 +12,7 @@
  */
 package com.netflix.sel.type;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
 
 import com.netflix.sel.visitor.SelOp;
 import java.time.DayOfWeek;

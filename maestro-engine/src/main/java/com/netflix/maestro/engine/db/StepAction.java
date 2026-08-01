@@ -15,13 +15,12 @@ package com.netflix.maestro.engine.db;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.engine.execution.RunRequest;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.models.Actions;
 import com.netflix.maestro.models.definition.User;
 import com.netflix.maestro.models.initiator.UpstreamInitiator;
@@ -33,6 +32,7 @@ import com.netflix.maestro.models.timeline.TimelineEvent;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
 import com.netflix.maestro.utils.Checks;
 import com.netflix.maestro.utils.MapHelper;
+import com.netflix.maestro.utils.ObjectHelper;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -44,7 +44,7 @@ import lombok.Setter;
 import lombok.ToString;
 
 /** Step action DB object. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
     value = {
@@ -83,7 +83,7 @@ public class StepAction {
   @Nullable private final RestartConfig restartConfig;
 
   /** builder class for lombok and jackson. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   public static final class StepActionBuilder {
     /** build runParams. */

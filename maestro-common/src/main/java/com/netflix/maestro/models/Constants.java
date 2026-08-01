@@ -33,12 +33,24 @@ public final class Constants {
   /** Reserved maestro suffix for internal usage. */
   public static final String MAESTRO_SUFFIX = "_maestro";
 
-  /** Maestro conductor proxy task name. */
+  /** Maestro flow engine proxy task name. */
   public static final String MAESTRO_TASK_NAME = "MAESTRO_TASK";
 
-  /** Maestro conductor proxy task name set for user defined step. */
+  /** Maestro flow engine start task name. */
+  public static final String DEFAULT_START_TASK_NAME = MAESTRO_PREFIX + "start";
+
+  /** Maestro flow engine end task name. */
+  public static final String DEFAULT_END_TASK_NAME = MAESTRO_PREFIX + "end";
+
+  /** Maestro internal proxy flow task name set for user defined step. */
   public static final Set<String> USER_DEFINED_TASKS =
       Collections.singleton(Constants.MAESTRO_TASK_NAME);
+
+  /** Maestro internal tag permit task name. */
+  public static final String TAG_PERMIT_TASK_NAME = MAESTRO_PREFIX + "tag_permit";
+
+  /** Maestro internal flow name for internal operations. */
+  public static final String INTERNAL_FLOW_NAME = "internal_flow" + MAESTRO_SUFFIX;
 
   /** Maestro workflow instance summary field name. */
   public static final String WORKFLOW_SUMMARY_FIELD = MAESTRO_PREFIX + "workflow_summary";
@@ -47,20 +59,11 @@ public final class Constants {
   public static final String WORKFLOW_RUNTIME_SUMMARY_FIELD =
       MAESTRO_PREFIX + "workflow_runtime_summary";
 
-  /** Maestro step definition field name. */
-  public static final String STEP_DEFINITION_FIELD = MAESTRO_PREFIX + "step_definition";
-
   /** Maestro step instance runtime summary field name. */
   public static final String STEP_RUNTIME_SUMMARY_FIELD = MAESTRO_PREFIX + "step_runtime_summary";
 
-  /** Maestro step instance runtime summary field name. */
-  public static final String DEFAULT_START_STEP_NAME = MAESTRO_PREFIX + "start";
-
-  /** Maestro step instance runtime summary field name. */
-  public static final String DEFAULT_START_FORK_STEP_NAME = MAESTRO_PREFIX + "start_fork";
-
-  /** Maestro step instance runtime summary field name. */
-  public static final String DEFAULT_END_STEP_NAME = MAESTRO_PREFIX + "end";
+  /** All maestro step dependencies field name. */
+  public static final String ALL_STEP_DEPENDENCIES_FIELD = MAESTRO_PREFIX + "all_step_dependencies";
 
   /** Maestro foreach inline workflow prefix. */
   public static final String FOREACH_INLINE_WORKFLOW_PREFIX =
@@ -73,10 +76,14 @@ public final class Constants {
   public static final String INDEX_PARAM_NAME = "loop_index";
 
   /** System-wide foreach loop iteration limit. */
-  public static final int FOREACH_ITERATION_LIMIT = 25 * 1000;
+  public static final int ITERATION_LIMIT = 25 * 1000;
 
   /** Maximum limit for foreach concurrency. */
   public static final int FOREACH_CONCURRENCY_MAX_LIMIT = 500;
+
+  /** Maestro while inline workflow prefix. */
+  public static final String WHILE_INLINE_WORKFLOW_PREFIX =
+      MAESTRO_PREFIX + StepType.WHILE.getType();
 
   /** Maximum limit for step concurrency. */
   public static final long STEP_CONCURRENCY_MAX_LIMIT = 1000L;
@@ -128,7 +135,7 @@ public final class Constants {
   /**
    * The maximum number of steps defined in workflow definition. Note that this limit can only be
    * bumped up and cannot be decreased as it is related to the pushed data.
-   * <li>Internal conductor DAG engine might not handle too large workflow well.
+   * <li>Internal flow engine might not handle too large workflow well.
    * <li>UI might be slow to render large workflows with too many nodes.
    * <li>Enforce the best practice to avoid a workflow with too many steps hard coded in a single
    *     workflow definition.
@@ -146,6 +153,9 @@ public final class Constants {
 
   /** maximum retry wait limit for platform errors. */
   public static final int MAX_PLATFORM_RETRY_LIMIT_SECS = 24 * 3600; // 1 day
+
+  /** maximum retry wait limit for timeout errors. */
+  public static final int MAX_TIMEOUT_RETRY_LIMIT_SECS = 24 * 3600; // 1 day
 
   /** Max timeout limit in milliseconds. */
   public static final long MAX_TIME_OUT_LIMIT_IN_MILLIS = TimeUnit.DAYS.toMillis(120); // 120 days
@@ -203,6 +213,12 @@ public final class Constants {
   /** Metadata key for internal parameter mode. */
   public static final String METADATA_INTERNAL_PARAM_MODE = "internal_mode";
 
+  /**
+   * Default step parameter separator used in cross-step parameter references (e.g. {@code
+   * step1__param}). Configurable via {@code maestro.param-evaluator.step-param-separator}.
+   */
+  public static final String DEFAULT_STEP_PARAM_SEPARATOR = "__";
+
   /** Step ID Param Key. */
   public static final String STEP_ID_PARAM = "step_id";
 
@@ -236,11 +252,12 @@ public final class Constants {
   /** Workflow owner param key. */
   public static final String WORKFLOW_OWNER_PARAM = "owner";
 
-  /** Param for time trigger timezone, first timezone in cron trigger. */
+  /** Param for time trigger timezone, first timezone in cron time triggers. */
   public static final String FIRST_TIME_TRIGGER_TIMEZONE_PARAM = "FIRST_TIME_TRIGGER_TIMEZONE";
 
   /**
-   * Param for initiator timezone, in case where it is time triggered, to be sent by cron service.
+   * Param for initiator timezone, in case where it is time triggered, to be sent by cron time
+   * trigger.
    */
   public static final String INITIATOR_TIMEZONE_PARAM = "INITIATOR_TIMEZONE";
 
@@ -258,6 +275,21 @@ public final class Constants {
 
   /** Step instance status param name key used in SEL to retrieve the step status. */
   public static final String STEP_STATUS_PARAM = "MAESTRO_STEP_STATUS";
+
+  /** Step instance end time param name key used in SEL to retrieve the step end time. */
+  public static final String STEP_END_TIME_PARAM = "MAESTRO_STEP_END_TIME";
+
+  /**
+   * Step instance error retry param name key used in SEL to retrieve the step error retry attempt
+   * number.
+   */
+  public static final String STEP_ERROR_RETRIES_PARAM = "MAESTRO_STEP_ERROR_RETRIES";
+
+  /** Param Key for job template version. * */
+  public static final String JOB_TEMPLATE_VERSION_PARAM = "job_template_version";
+
+  /** Default version for job template. * */
+  public static final String DEFAULT_JOB_TEMPLATE_VERSION = "default";
 
   /**
    * Match all instances. Special value to denote a breakpoint which is set to match all wf
@@ -305,12 +337,12 @@ public final class Constants {
               "AUTHORIZED_MANAGERS"));
 
   /** Minimum interval for any time trigger. */
-  public static final long TIME_TRIGGER_MINIMUM_INTERVAL = TimeUnit.MINUTES.toMillis(3);
+  public static final long TIME_TRIGGER_MINIMUM_INTERVAL = TimeUnit.MINUTES.toMillis(2);
 
   /** Workflow create request data size limit used for validation. */
   public static final String WORKFLOW_CREATE_REQUEST_DATA_SIZE_LIMIT = "256KB";
 
-  /** params' total size (in JSON format) limit for a workflow instance or a step instance. */
+  /** param's total size (in JSON format) limit for a workflow instance or a step instance. */
   public static final int JSONIFIED_PARAMS_STRING_SIZE_LIMIT = 750000;
 
   /** Defines limit for the query for step attempt state view. */
@@ -329,12 +361,6 @@ public final class Constants {
   /** the number of components existed in an inline workflow id split by _. */
   public static final int INLINE_WORKFLOW_ID_SPLIT_COMPONENT_COUNT = 5;
 
-  /** the time buffer to tell if the current polling call should be treated as the first. */
-  public static final long FIRST_POLL_TIME_BUFFER_IN_MILLIS = 3000L;
-
-  /**
-   * the poll count to tell if the current polling call should be treated as the first. as conductor
-   * update the count twice in one polling, we set it to be 3 so the first two cycles are included.
-   */
-  public static final int FIRST_POLLING_COUNT_LIMIT = 3;
+  /** the maximal number of signal names supported in a single signal trigger. */
+  public static final int MAX_SIGNAL_NAMES_IN_A_TRIGGER = 8;
 }

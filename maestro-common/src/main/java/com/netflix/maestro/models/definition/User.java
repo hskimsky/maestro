@@ -20,7 +20,7 @@ import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.JsonSerializer;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
@@ -38,7 +38,7 @@ import lombok.Getter;
 /** Owner info, which applies to the whole workflow across all versions. */
 @Builder
 @Getter
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonSerialize(using = User.UserSerializer.class)
 @JsonDeserialize(using = User.UserDeserializer.class)
@@ -102,7 +102,7 @@ public class User {
         Map<String, Object> extraInfo = new LinkedHashMap<>();
         while (it.hasNext()) {
           Map.Entry<String, JsonNode> e = it.next();
-          if (e.getKey().equals(NAME_KEY)) {
+          if (NAME_KEY.equals(e.getKey())) {
             Checks.checkTrue(
                 e.getValue().isTextual(),
                 "User name field only supports StringNode: " + e.getValue().getClass());

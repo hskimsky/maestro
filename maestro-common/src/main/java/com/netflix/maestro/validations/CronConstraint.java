@@ -13,16 +13,15 @@
 package com.netflix.maestro.validations;
 
 import com.netflix.maestro.utils.TriggerHelper;
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-import java.text.ParseException;
-import javax.validation.Constraint;
-import javax.validation.ConstraintValidator;
-import javax.validation.ConstraintValidatorContext;
-import javax.validation.Payload;
 
 /** Maestro cron expression validation. */
 @Documented
@@ -53,8 +52,8 @@ public @interface CronConstraint {
         return false;
       }
       try {
-        TriggerHelper.buildCron(cronExpression);
-      } catch (ParseException e) {
+        TriggerHelper.validateCron(cronExpression);
+      } catch (Exception e) {
         context
             .buildConstraintViolationWithTemplate(
                 String.format(

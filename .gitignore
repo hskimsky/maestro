@@ -40,6 +40,9 @@ bin/
 ### VS Code ###
 .vscode/
 
+### Claude Code ###
+.claude/
+
 # OS generated files #
 .DS_Store
 ehthumbs.db
@@ -55,3 +58,4 @@ Thumbs.db
 ######################
 tomcat.8080/
 cockroach-data
+**/tmp

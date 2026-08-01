@@ -13,16 +13,22 @@
 package com.netflix.maestro.engine.dao;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.netflix.conductor.cockroachdb.CockroachDBConfiguration;
-import com.netflix.conductor.cockroachdb.dao.CockroachDBBaseDAO;
 import com.netflix.maestro.annotations.Nullable;
 import com.netflix.maestro.annotations.SuppressFBWarnings;
+import com.netflix.maestro.database.AbstractDatabaseDao;
+import com.netflix.maestro.database.DatabaseConfiguration;
 import com.netflix.maestro.engine.steps.ForeachStepRuntime;
+import com.netflix.maestro.engine.steps.WhileStepRuntime;
 import com.netflix.maestro.engine.tasks.MaestroTask;
 import com.netflix.maestro.exceptions.MaestroBadRequestException;
 import com.netflix.maestro.exceptions.MaestroNotFoundException;
+import com.netflix.maestro.metrics.MaestroMetrics;
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.models.definition.ForeachStep;
+import com.netflix.maestro.models.definition.Step;
+import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.definition.User;
+import com.netflix.maestro.models.definition.WhileStep;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.models.definition.WorkflowDefinition;
 import com.netflix.maestro.models.stepruntime.PausedStepAttempt;
@@ -35,6 +41,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.sql.DataSource;
@@ -69,9 +76,8 @@ import lombok.extern.slf4j.Slf4j;
  * of paused step attempt is same as that of breakpoint.
  */
 @SuppressFBWarnings("OBL_UNSATISFIED_OBLIGATION")
-@SuppressWarnings("PMD.AvoidInstantiatingObjectsInLoops")
 @Slf4j
-public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
+public class MaestroStepBreakpointDao extends AbstractDatabaseDao {
   private static final String WORKFLOW_ID = "workflow_id";
   private static final String VERSION = "version";
   private static final String INSTANCE_ID = "instance_id";
@@ -117,8 +123,12 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
       CONDITION_PAUSED_STEP_ATTEMPT + CONDITION_BY_ALL_STEP_IDENTIFIERS;
 
   private static final String ADD_STEP_BREAKPOINT =
-      "UPSERT INTO maestro_step_breakpoint (workflow_id,version,instance_id,run_id,step_id,step_attempt_id"
-          + ",created_by,create_ts,system_generated) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,false) RETURNING *";
+      "INSERT INTO maestro_step_breakpoint (workflow_id,version,instance_id,run_id,step_id,step_attempt_id,"
+          + "created_by,create_ts,system_generated) VALUES (?,?,?,?,?,?,?::jsonb,CURRENT_TIMESTAMP,false) "
+          + "ON CONFLICT (workflow_id, step_id, system_generated, version, instance_id, run_id, step_attempt_id) "
+          + "DO UPDATE SET workflow_id=EXCLUDED.workflow_id,version=EXCLUDED.version,instance_id=EXCLUDED.instance_id,"
+          + "run_id=EXCLUDED.run_id,step_id=EXCLUDED.step_id,step_attempt_id=EXCLUDED.step_attempt_id,"
+          + "created_by=EXCLUDED.created_by,create_ts=CURRENT_TIMESTAMP,system_generated=false RETURNING *";
 
   private static final String SELECT_QUERY_PREFIX = "SELECT * FROM maestro_step_breakpoint WHERE";
 
@@ -138,11 +148,20 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
   private static final String DELETE_STEP_BREAKPOINT_QUERY =
       DELETE_QUERY_PREFIX + CONDITION_BY_STEP_BREAKPOINT_IDENTIFIERS;
 
+  private static final String DELETE_LIMIT_BY =
+      " (workflow_id, step_id, system_generated, version, instance_id, run_id, step_attempt_id) IN ("
+          + "SELECT workflow_id, step_id, system_generated, version, instance_id, run_id, step_attempt_id "
+          + "FROM maestro_step_breakpoint WHERE ";
+
   private static final String DELETE_PAUSED_STEP_ATTEMPT_BASE_QUERY =
-      DELETE_QUERY_PREFIX + CONDITION_PAUSED_STEP_ATTEMPT + CONDITION_BY_DEFINITION_IDS;
+      DELETE_QUERY_PREFIX
+          + DELETE_LIMIT_BY
+          + CONDITION_PAUSED_STEP_ATTEMPT
+          + CONDITION_BY_DEFINITION_IDS;
 
   private static final String DELETE_PAUSED_INLINE_WORKFLOW_STEP_ATTEMPT_BASE_QUERY =
       DELETE_QUERY_PREFIX
+          + DELETE_LIMIT_BY
           + CONDITION_PAUSED_STEP_ATTEMPT
           + CONDITION_BY_INTERNAL_WORKFLOW_ID_RANGES_STEP_ID;
 
@@ -167,20 +186,23 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
   public MaestroStepBreakpointDao(
       DataSource dataSource,
       ObjectMapper objectMapper,
-      CockroachDBConfiguration config,
-      MaestroWorkflowDao workflowDao) {
-    super(dataSource, objectMapper, config);
+      DatabaseConfiguration config,
+      MaestroWorkflowDao workflowDao,
+      MaestroMetrics metrics) {
+    super(dataSource, objectMapper, config, metrics);
     this.workflowDao = workflowDao;
     this.batchDeletionLimitSupplier = () -> Constants.BATCH_DELETION_LIMIT;
   }
 
+  // for unit test
   MaestroStepBreakpointDao(
       DataSource dataSource,
       ObjectMapper objectMapper,
-      CockroachDBConfiguration config,
+      DatabaseConfiguration config,
       MaestroWorkflowDao workflowDao,
-      Supplier<Integer> batchDeletionLimitSupplier) {
-    super(dataSource, objectMapper, config);
+      Supplier<Integer> batchDeletionLimitSupplier,
+      MaestroMetrics metrics) {
+    super(dataSource, objectMapper, config, metrics);
     this.workflowDao = workflowDao;
     this.batchDeletionLimitSupplier = batchDeletionLimitSupplier;
   }
@@ -266,7 +288,6 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
    * @param stepAttemptId stepAttemptId for the breakpoint. Special value to denote match all
    *     ${@link Constants#MATCH_ALL_STEP_ATTEMPTS}
    * @return List of all the breakpoints.
-   * @throws SQLException sql exception
    */
   public List<StepBreakpoint> getStepBreakPoints(
       String workflowId,
@@ -461,7 +482,6 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
       long runId,
       String stepId,
       long stepAttemptId) {
-    List<PausedStepAttempt> toReturn = new ArrayList<>();
     final String revisedWorkflowId = getRevisedWorkflowId(workflowId, stepId, false);
     final boolean isInlineWorkflow = IdHelper.isInlineWorkflowId(revisedWorkflowId);
     final String query =
@@ -489,6 +509,7 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
                           null,
                           query)) {
                     ResultSet result = stmt.executeQuery();
+                    List<PausedStepAttempt> toReturn = new ArrayList<>();
                     while (result.next()) {
                       toReturn.add(pausedStepAttemptFromResultSet(result));
                     }
@@ -603,8 +624,8 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
    * references to a non-inline-workflow, we simply use it. Otherwise, we use the prefix (maestro
    * prefix + internal id of the parent workflow). Example:
    * maestro_foreach_hashedInternalId_hashedInstanceId_hashedStepReference will be converted to
-   * maestro_foreach_hashedInternalId_. Please reference to {@link ForeachStepRuntime} for inline
-   * workflow id format.
+   * maestro_foreach_hashedInternalId_. Please reference to {@link ForeachStepRuntime} and @{@link
+   * WhileStepRuntime} for inline workflow id format.
    */
   private String getStepBreakPointWorkflowId(String workflowId) {
     String revisedWorkflowId = workflowId;
@@ -616,9 +637,7 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
             "workflowId [%s] is started as an inline id but is formatted incorrectly.",
             workflowId);
       }
-      final String hashedInternalId = components[2];
-      revisedWorkflowId =
-          String.format("%s_%s_", Constants.FOREACH_INLINE_WORKFLOW_PREFIX, hashedInternalId);
+      revisedWorkflowId = String.format("%s_%s_%s_", components[0], components[1], components[2]);
     }
 
     return revisedWorkflowId;
@@ -812,7 +831,7 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
       query.append(CONDITION_BY_SPECIFIC_ATTEMPT_ID);
     }
     if (entryLimit != null) {
-      query.append(ENTRY_LIMIT);
+      query.append(ENTRY_LIMIT).append(')');
     }
 
     PreparedStatement stmt = conn.prepareStatement(query.toString());
@@ -870,20 +889,41 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
    *
    * @return if the step id is referencing a valid nested step (a step that is inside foreach step).
    */
-  private boolean validateStep(Workflow workflow, String stepId) {
+  private Optional<StepType> getRootStepTypeForNestedStep(Workflow workflow, String stepId) {
     if (workflow.getSteps().stream().anyMatch(step -> step.getId().equals(stepId))) {
-      return false;
+      return Optional.empty();
     }
     // Verify if step is present or not
-    if (!workflow.getAllStepIds().contains(stepId)) {
+    StepType rootStepType = getRootStepTypeForNestedStep(workflow.getSteps(), stepId);
+    if (rootStepType == null) {
       throw new MaestroBadRequestException(
           Collections.emptyList(),
           "Breakpoint can't be set as stepId [%s] is not present for the workflowId [%s]",
           stepId,
           workflow.getId());
     }
+    return Optional.of(rootStepType);
+  }
 
-    return true;
+  private StepType getRootStepTypeForNestedStep(List<Step> stepList, String stepId) {
+    for (Step step : stepList) {
+      if (step.getId().equals(stepId)) {
+        return step.getType();
+      }
+      if (step.getType() == StepType.FOREACH) {
+        StepType ret = getRootStepTypeForNestedStep(((ForeachStep) step).getSteps(), stepId);
+        if (ret != null) {
+          return step.getType();
+        }
+      }
+      if (step.getType() == StepType.WHILE) {
+        StepType ret = getRootStepTypeForNestedStep(((WhileStep) step).getSteps(), stepId);
+        if (ret != null) {
+          return step.getType();
+        }
+      }
+    }
+    return null;
   }
 
   private PausedStepAttempt pausedStepAttemptFromResultSet(ResultSet rs) throws SQLException {
@@ -928,10 +968,13 @@ public class MaestroStepBreakpointDao extends CockroachDBBaseDAO {
     WorkflowDefinition workflowDefinition =
         workflowDao.getWorkflowDefinition(workflowId, Constants.WorkflowVersion.DEFAULT.name());
     try {
-      final boolean isNestedStep = validateStep(workflowDefinition.getWorkflow(), stepId);
-      return isNestedStep
-          ? IdHelper.getInlineWorkflowPrefixId(workflowDefinition.getInternalId())
-          : workflowId;
+      Optional<StepType> rootStepType =
+          getRootStepTypeForNestedStep(workflowDefinition.getWorkflow(), stepId);
+      return rootStepType
+          .map(
+              stepType ->
+                  IdHelper.getInlineWorkflowPrefixId(workflowDefinition.getInternalId(), stepType))
+          .orElse(workflowId);
     } catch (MaestroBadRequestException e) {
       if (!latestVersionStepExistEnforced) {
         return workflowId;

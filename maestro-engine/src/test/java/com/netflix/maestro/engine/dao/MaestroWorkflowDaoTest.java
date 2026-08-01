@@ -18,9 +18,7 @@ import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -32,48 +30,44 @@ import com.netflix.maestro.engine.MaestroTestHelper;
 import com.netflix.maestro.engine.db.PropertiesUpdate;
 import com.netflix.maestro.engine.db.PropertiesUpdate.Type;
 import com.netflix.maestro.engine.dto.MaestroWorkflow;
-import com.netflix.maestro.engine.jobevents.DeleteWorkflowJobEvent;
-import com.netflix.maestro.engine.jobevents.WorkflowVersionUpdateJobEvent;
-import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
 import com.netflix.maestro.engine.utils.TriggerSubscriptionClient;
 import com.netflix.maestro.exceptions.InvalidWorkflowVersionException;
 import com.netflix.maestro.exceptions.MaestroNotFoundException;
 import com.netflix.maestro.exceptions.MaestroPreconditionFailedException;
-import com.netflix.maestro.exceptions.MaestroRetryableError;
 import com.netflix.maestro.exceptions.MaestroRuntimeException;
 import com.netflix.maestro.exceptions.MaestroUnprocessableEntityException;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.api.WorkflowOverviewResponse;
+import com.netflix.maestro.models.definition.DefaultAlerting;
 import com.netflix.maestro.models.definition.Metadata;
 import com.netflix.maestro.models.definition.Properties;
 import com.netflix.maestro.models.definition.PropertiesSnapshot;
 import com.netflix.maestro.models.definition.RunStrategy;
-import com.netflix.maestro.models.definition.StepOutputsDefinition;
 import com.netflix.maestro.models.definition.Tag;
 import com.netflix.maestro.models.definition.TagList;
 import com.netflix.maestro.models.definition.User;
 import com.netflix.maestro.models.definition.Workflow;
 import com.netflix.maestro.models.definition.WorkflowDefinition;
-import com.netflix.maestro.models.error.Details;
 import com.netflix.maestro.models.initiator.ForeachInitiator;
 import com.netflix.maestro.models.initiator.UpstreamInitiator;
 import com.netflix.maestro.models.instance.WorkflowInstance;
-import com.netflix.maestro.models.parameter.MapParamDefinition;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.timeline.WorkflowTimeline;
 import com.netflix.maestro.models.trigger.CronTimeTrigger;
 import com.netflix.maestro.models.trigger.SignalTrigger;
 import com.netflix.maestro.models.trigger.TimeTrigger;
 import com.netflix.maestro.models.trigger.TriggerUuids;
+import com.netflix.maestro.queue.MaestroQueueSystem;
+import com.netflix.maestro.queue.jobevents.WorkflowVersionUpdateJobEvent;
 import com.netflix.maestro.utils.IdHelper;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.After;
@@ -103,33 +97,36 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
       new PropertiesUpdate(Type.DELETE_WORKFLOW_TAG);
 
   private MaestroWorkflowDao workflowDao;
-  private MaestroJobEventPublisher publisher;
+  private MaestroQueueSystem queueSystem;
   private TriggerSubscriptionClient triggerClient;
   private MaestroWorkflowInstanceDao instanceDao;
   private MaestroRunStrategyDao runStrategyDao;
 
   @Before
   public void setUp() {
-    publisher = mock(MaestroJobEventPublisher.class);
+    queueSystem = mock(MaestroQueueSystem.class);
     triggerClient = mock(TriggerSubscriptionClient.class);
-    workflowDao = new MaestroWorkflowDao(dataSource, MAPPER, config, publisher, triggerClient);
-    instanceDao = new MaestroWorkflowInstanceDao(dataSource, MAPPER, config, publisher);
-    runStrategyDao = new MaestroRunStrategyDao(dataSource, MAPPER, config, publisher, metricRepo);
+    workflowDao =
+        new MaestroWorkflowDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, triggerClient, metricRepo);
+    instanceDao =
+        new MaestroWorkflowInstanceDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
+    runStrategyDao =
+        new MaestroRunStrategyDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
   }
 
   @After
   public void tearDown() {
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID1);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID2);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID3);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID4);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID5);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID6);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID7);
-    MaestroTestHelper.removeWorkflow(dataSource, TEST_WORKFLOW_ID8);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID1, 1);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_WORKFLOW_ID1, 2);
-    MaestroTestHelper.removeWorkflowInstance(dataSource, TEST_INLINE_WORKFLOW_ID1, 1);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID1);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID2);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID3);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID4);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID5);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID6);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID7);
+    MaestroTestHelper.removeWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID8);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID1, 1);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_WORKFLOW_ID1, 2);
+    MaestroTestHelper.removeWorkflowInstance(DATA_SOURCE, TEST_INLINE_WORKFLOW_ID1, 1);
   }
 
   @Test
@@ -138,8 +135,9 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     WorkflowDefinition definition =
         workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
     assertEquals(wfd, definition);
-    verify(publisher, times(1)).publishOrThrow(any(), any());
-    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any());
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any(), any());
   }
 
   @Test
@@ -151,7 +149,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             "fixtures/instances/sample-workflow-instance-created.json", WorkflowInstance.class);
     instance.setWorkflowId(TEST_WORKFLOW_ID1);
     runStrategyDao.startWithRunStrategy(instance, RunStrategy.create("SEQUENTIAL"));
-    MaestroTestHelper.deleteWorkflow(dataSource, TEST_WORKFLOW_ID1);
+    MaestroTestHelper.deleteWorkflow(DATA_SOURCE, TEST_WORKFLOW_ID1);
     WorkflowDefinition wfdAnother = loadWorkflow(TEST_WORKFLOW_ID1);
     workflowDao.addWorkflowDefinition(
         wfdAnother, wfdAnother.getPropertiesSnapshot().extractProperties());
@@ -166,22 +164,16 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
         workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
     assertEquals(wfd, definition);
     assertNotNull(wfd.getInternalId());
-    List<MapParamDefinition> step1Signals =
-        definition
-            .getWorkflow()
-            .getSteps()
-            .get(0)
-            .getOutputs()
-            .get(StepOutputsDefinition.StepOutputType.SIGNAL)
-            .asSignalOutputsDefinition()
-            .getDefinitions();
+    var step1Signals =
+        definition.getWorkflow().getSteps().getFirst().getSignalOutputs().definitions();
     assertEquals(2, step1Signals.size());
-    assertEquals("dummy/test/signal1", step1Signals.get(0).getValue().get("name").getValue());
+    assertEquals("dummy/test/signal1", step1Signals.getFirst().getName());
     assertEquals(
-        1, step1Signals.get(0).getValue().get("p1").asLongParamDef().getValue().longValue());
-    assertEquals("aaa", step1Signals.get(1).getValue().get("name").getExpression());
-    assertEquals("auu+1", step1Signals.get(1).getValue().get("p2").getExpression());
-    verify(publisher, times(1)).publishOrThrow(any(), any());
+        1, step1Signals.getFirst().getParams().get("p1").asLongParamDef().getValue().longValue());
+    assertEquals("aaa", step1Signals.get(1).getName());
+    assertEquals("auu+1", step1Signals.get(1).getParams().get("p2").getExpression());
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
   }
 
   @Test
@@ -260,7 +252,8 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
       Boolean signalTriggerDisabled,
       boolean isCurrentNull,
       boolean isPreviousNull,
-      int triggerCalled) {
+      int triggerCalled)
+      throws SQLException {
     wfd.getMetadata().setCreateTime(wfd.getMetadata().getCreateTime() + 1);
     wfd.setIsActive(active);
     wfd.setPropertiesSnapshot(
@@ -277,17 +270,20 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     verifyTriggerUpdate(isCurrentNull, isPreviousNull, triggerCalled);
   }
 
-  private void verifyTriggerUpdate(
-      boolean isCurrentNull, boolean isPreviousNull, int triggerCalled) {
-    verify(publisher, times(1)).publishOrThrow(any(), any());
-    verify(triggerClient, times(triggerCalled)).upsertTriggerSubscription(any(), any(), any());
+  private void verifyTriggerUpdate(boolean isCurrentNull, boolean isPreviousNull, int triggerCalled)
+      throws SQLException {
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    verify(triggerClient, times(triggerCalled))
+        .upsertTriggerSubscription(any(), any(), any(), any());
     verify(triggerClient, times(triggerCalled))
         .upsertTriggerSubscription(
+            any(),
             any(),
             isCurrentNull ? eq(null) : any(TriggerUuids.class),
             isPreviousNull ? eq(null) : any(TriggerUuids.class));
     reset(triggerClient);
-    reset(publisher);
+    reset(queueSystem);
   }
 
   @Test
@@ -295,7 +291,8 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     WorkflowDefinition wfd = loadWorkflow(TEST_WORKFLOW_ID2);
     workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
     assertNotNull(wfd.getInternalId());
-    verify(publisher, times(1)).publishOrThrow(any(), any());
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
     MaestroWorkflow maestroWorkflow = workflowDao.getMaestroWorkflow(TEST_WORKFLOW_ID2);
     assertEquals("tester", maestroWorkflow.getPropertiesSnapshot().getOwner().getName());
     assertEquals(1L, maestroWorkflow.getLatestVersionId().longValue());
@@ -308,18 +305,20 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             .author(User.create("test"))
             .build(),
         newSnapshot);
-    verify(publisher, times(2)).publishOrThrow(any(), any());
+    verify(queueSystem, times(2)).enqueue(any(), any());
+    verify(queueSystem, times(2)).notify(any());
     maestroWorkflow = workflowDao.getMaestroWorkflow(TEST_WORKFLOW_ID2);
     assertEquals("tester", maestroWorkflow.getPropertiesSnapshot().getOwner().getName());
     Properties props = new Properties();
     props.setOwner(User.create("another-owner"));
     workflowDao.updateWorkflowProperties(
         TEST_WORKFLOW_ID2, User.create("test"), props, PROPERTIES_UPDATE);
-    verify(publisher, times(3)).publishOrThrow(any(), any());
+    verify(queueSystem, times(3)).enqueue(any(), any());
+    verify(queueSystem, times(3)).notify(any());
     maestroWorkflow = workflowDao.getMaestroWorkflow(TEST_WORKFLOW_ID2);
     assertEquals("another-owner", maestroWorkflow.getPropertiesSnapshot().getOwner().getName());
     assertEquals(wfd, workflowDao.addWorkflowDefinition(wfd, null));
-    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any());
+    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any(), any());
   }
 
   @Test
@@ -342,8 +341,9 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             .tags(new TagList(Collections.singletonList(tagToBeAdded)))
             .build(),
         newSnapshot);
-    verify(publisher, times(2)).publishOrThrow(any(), any());
-    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any());
+    verify(queueSystem, times(2)).enqueue(any(), any());
+    verify(queueSystem, times(2)).notify(any());
+    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any(), any());
   }
 
   @Test
@@ -419,7 +419,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, maestroWorkflow.getPropertiesSnapshot().getTags().getTags().size());
     assertEquals(
         "some-workflow-tag",
-        maestroWorkflow.getPropertiesSnapshot().getTags().getTags().get(0).getName());
+        maestroWorkflow.getPropertiesSnapshot().getTags().getTags().getFirst().getName());
     Tag tagToBeDeleted = Tag.create("some-workflow-tag");
     Properties props = new Properties();
     props.setTags(new TagList(Collections.singletonList(tagToBeDeleted)));
@@ -433,8 +433,9 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             .tags(new TagList(null))
             .build(),
         newSnapshot);
-    verify(publisher, times(2)).publishOrThrow(any(), any());
-    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any());
+    verify(queueSystem, times(2)).enqueue(any(), any());
+    verify(queueSystem, times(2)).notify(any());
+    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any(), any());
   }
 
   @Test
@@ -517,7 +518,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     ArgumentCaptor<Workflow> workflowCaptor = ArgumentCaptor.forClass(Workflow.class);
     Mockito.verify(triggerClient, Mockito.times(1))
         .upsertTriggerSubscription(
-            workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
+            any(), workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
     Workflow capturedWorkflow = workflowCaptor.getValue();
     Assert.assertNotNull(capturedWorkflow);
     Assert.assertEquals("sample-active-wf-with-signal-triggers", capturedWorkflow.getId());
@@ -542,7 +543,10 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
                 MaestroRuntimeException.Code.INTERNAL_ERROR, "test error message"))
         .when(triggerClient)
         .upsertTriggerSubscription(
-            Mockito.eq(wfd.getWorkflow()), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
+            any(),
+            Mockito.eq(wfd.getWorkflow()),
+            Mockito.eq(wfd.getTriggerUuids()),
+            Mockito.eq(null));
     AssertHelper.assertThrows(
         "expects mockito test error",
         MaestroRuntimeException.class,
@@ -634,7 +638,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     ArgumentCaptor<Workflow> workflowCaptor = ArgumentCaptor.forClass(Workflow.class);
     Mockito.verify(triggerClient, Mockito.times(1))
         .upsertTriggerSubscription(
-            workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
+            any(), workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
     Workflow capturedWorkflow = workflowCaptor.getValue();
     Assert.assertNotNull(capturedWorkflow);
     Assert.assertEquals("sample-active-wf-with-time-triggers", capturedWorkflow.getId());
@@ -665,7 +669,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             new MaestroRuntimeException(
                 MaestroRuntimeException.Code.INTERNAL_ERROR, "test error message"))
         .when(triggerClient)
-        .upsertTriggerSubscription(Mockito.eq(wfd.getWorkflow()), any(), any());
+        .upsertTriggerSubscription(any(), Mockito.eq(wfd.getWorkflow()), any(), any());
     AssertHelper.assertThrows(
         "expects mockito test error",
         MaestroRuntimeException.class,
@@ -685,10 +689,10 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
 
     Mockito.verify(triggerClient, Mockito.times(1))
         .upsertTriggerSubscription(
-            workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
+            any(), workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
     Mockito.verify(triggerClient, Mockito.times(1))
         .upsertTriggerSubscription(
-            workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
+            any(), workflowCaptor.capture(), Mockito.eq(wfd.getTriggerUuids()), Mockito.eq(null));
     Workflow capturedWorkflow = workflowCaptor.getValue();
     Assert.assertNotNull(capturedWorkflow);
     Assert.assertEquals("sample-active-wf-with-triggers", capturedWorkflow.getId());
@@ -708,6 +712,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertNotNull(wfd.getInternalId());
     Mockito.verify(triggerClient, Mockito.times(1))
         .upsertTriggerSubscription(
+            any(),
             workflowCaptor.capture(),
             Mockito.eq(wfd.getTriggerUuids()),
             Mockito.eq(wfd.getTriggerUuids()));
@@ -796,14 +801,19 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
   public void testDeleteWorkflow() throws Exception {
     WorkflowDefinition wfd = loadWorkflow(TEST_WORKFLOW_ID1);
     workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
+
     WorkflowDefinition def = workflowDao.getWorkflowDefinition(TEST_WORKFLOW_ID1, "latest");
     assertNotNull(wfd.getInternalId());
     assertNotNull(def.getInternalId());
     assertEquals(wfd.getInternalId(), def.getInternalId());
     assertEquals(wfd.getWorkflow(), def.getWorkflow());
     workflowDao.deleteWorkflow(TEST_WORKFLOW_ID1, User.create("tester"));
-    verify(publisher, times(1)).publishOrThrow(any(DeleteWorkflowJobEvent.class), any());
-    reset(publisher);
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
     AssertHelper.assertThrows(
         "The workflow should have been deleted",
         MaestroNotFoundException.class,
@@ -828,22 +838,24 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     WorkflowDefinition wfd = loadWorkflow(TEST_WORKFLOW_ID1);
     workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
     assertNotNull(wfd.getInternalId());
+    verify(queueSystem, times(1)).enqueue(any(), any(WorkflowVersionUpdateJobEvent.class));
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
 
-    doCallRealMethod().when(publisher).publishOrThrow(any(), any());
-    doCallRealMethod().when(publisher).publishOrThrow(any(), anyLong(), any());
-    when(publisher.publish(any(), anyLong())).thenReturn(Optional.of(Details.create("test")));
+    when(queueSystem.enqueue(any(), any())).thenThrow(new RuntimeException("test"));
     AssertHelper.assertThrows(
         "The workflow cannot be deleted due to publishing event failure.",
-        MaestroRetryableError.class,
-        "Failed to publish maestro delete job event for workflow",
+        RuntimeException.class,
+        "test",
         () -> workflowDao.deleteWorkflow(TEST_WORKFLOW_ID1, User.create("tester")));
-    reset(publisher);
+    verify(queueSystem, times(0)).notify(any());
+    reset(queueSystem);
 
     WorkflowInstance instance =
         loadObject(
             "fixtures/instances/sample-workflow-instance-created.json", WorkflowInstance.class);
     instance.setWorkflowId(TEST_WORKFLOW_ID1);
-    instanceDao.runWorkflowInstances(TEST_WORKFLOW_ID1, Collections.singletonList(instance), 1);
+    instanceDao.runWorkflowInstances(TEST_WORKFLOW_ID1, Collections.singletonList(instance));
     AssertHelper.assertThrows(
         "The workflow cannot be deleted due to running instances.",
         IllegalArgumentException.class,
@@ -859,8 +871,9 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(
         "Caller [test] deactivated workflow [sample-active-wf-with-triggers], whose last active version is [1]",
         timeline);
-    verify(publisher, times(1)).publishOrThrow(any(), any());
-    reset(publisher);
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
 
     WorkflowDefinition def = workflowDao.getWorkflowDefinition(TEST_WORKFLOW_ID6, "latest");
     assertEquals(false, def.getIsActive());
@@ -874,7 +887,9 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(
         "Caller [test] do nothing as there is no active workflow version for [sample-active-wf-with-triggers]",
         timeline);
-    verify(publisher, times(0)).publishOrThrow(any(), any());
+    verify(queueSystem, times(0)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
 
     WorkflowVersionUpdateJobEvent timelineEvent =
         (WorkflowVersionUpdateJobEvent)
@@ -919,8 +934,10 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(
         "Caller [test] do nothing as workflow version [sample-active-wf-with-triggers][1] is already active",
         timelineEvent.getLog());
-    verify(publisher, times(0)).publishOrThrow(any(), any());
-    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any());
+    verify(queueSystem, times(0)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
+    verify(triggerClient, times(0)).upsertTriggerSubscription(any(), any(), any(), any());
 
     // add a new active version
     testWorkflowUpdate(wfd, true, null, null, false, false, 1);
@@ -989,7 +1006,8 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(RunStrategy.Rule.PARALLEL, snapshot.getRunStrategy().getRule());
     assertEquals(20, snapshot.getRunStrategy().getWorkflowConcurrency());
     assertEquals(20, snapshot.getStepConcurrency().longValue());
-    assertEquals(1, snapshot.getAlerting().getTct().getCompletedByHour().intValue());
+    assertEquals(
+        1, ((DefaultAlerting) snapshot.getAlerting()).getTct().getCompletedByHour().intValue());
   }
 
   @Test
@@ -1004,8 +1022,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     initiator.setAncestors(Collections.singletonList(parent));
     instance.setInitiator(initiator);
 
-    instanceDao.runWorkflowInstances(
-        TEST_INLINE_WORKFLOW_ID1, Collections.singletonList(instance), 1);
+    instanceDao.runWorkflowInstances(TEST_INLINE_WORKFLOW_ID1, Collections.singletonList(instance));
 
     WorkflowDefinition wfd = loadWorkflow(TEST_WORKFLOW_ID1);
     workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
@@ -1017,7 +1034,8 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(RunStrategy.Rule.PARALLEL, snapshot.getRunStrategy().getRule());
     assertEquals(20, snapshot.getRunStrategy().getWorkflowConcurrency());
     assertEquals(20, snapshot.getStepConcurrency().longValue());
-    assertEquals(1, snapshot.getAlerting().getTct().getCompletedByHour().intValue());
+    assertEquals(
+        1, ((DefaultAlerting) snapshot.getAlerting()).getTct().getCompletedByHour().intValue());
 
     assertEquals(wfd.getPropertiesSnapshot(), snapshot);
 
@@ -1068,10 +1086,12 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     WorkflowDefinition definition = workflowDao.addWorkflowDefinition(wfd, properties);
     assertNotNull(wfd.getInternalId());
     assertEquals(wfd, definition);
-    verify(publisher, times(1)).publishOrThrow(any(), any());
-    reset(publisher);
+    verify(queueSystem, times(1)).enqueue(any(), any());
+    verify(queueSystem, times(1)).notify(any());
+    reset(queueSystem);
 
-    Arrays.asList(
+    for (var rs :
+        Arrays.asList(
             RunStrategy.create(10),
             RunStrategy.create("first_only"),
             RunStrategy.create("last_only"),
@@ -1090,19 +1110,18 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             RunStrategy.create("first_only"),
             RunStrategy.create("sequential"),
             RunStrategy.create("last_only"),
-            RunStrategy.create("sequential"))
-        .forEach(
-            rs -> {
-              properties.setRunStrategy(rs);
-              assertNotNull(
-                  workflowDao.updateWorkflowProperties(
-                      TEST_WORKFLOW_ID1, tester, properties, PROPERTIES_UPDATE));
-              verify(publisher, times(1)).publishOrThrow(any(), any());
-              reset(publisher);
-            });
+            RunStrategy.create("sequential"))) {
+      properties.setRunStrategy(rs);
+      assertNotNull(
+          workflowDao.updateWorkflowProperties(
+              TEST_WORKFLOW_ID1, tester, properties, PROPERTIES_UPDATE));
+      verify(queueSystem, times(1)).enqueue(any(), any());
+      verify(queueSystem, times(1)).notify(any());
+      reset(queueSystem);
+    }
 
     MaestroRunStrategyDao runStrategyDao =
-        new MaestroRunStrategyDao(dataSource, MAPPER, config, publisher, metricRepo);
+        new MaestroRunStrategyDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
     WorkflowInstance instance =
         loadObject(
             "fixtures/instances/sample-workflow-instance-created.json", WorkflowInstance.class);
@@ -1116,7 +1135,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     instance.setWorkflowRunId(0L);
     instance.setWorkflowUuid("uuid2");
     runStrategyDao.startWithRunStrategy(instance, properties.getRunStrategy());
-    reset(publisher);
+    reset(queueSystem);
 
     Arrays.asList(RunStrategy.create("first_only"), RunStrategy.create("last_only"))
         .forEach(
@@ -1132,7 +1151,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
             });
 
     MaestroWorkflowInstanceDao instanceDao =
-        new MaestroWorkflowInstanceDao(dataSource, MAPPER, config, publisher);
+        new MaestroWorkflowInstanceDao(DATA_SOURCE, MAPPER, CONFIG, queueSystem, metricRepo);
     instanceDao.tryTerminateQueuedInstance(instance, WorkflowInstance.Status.FAILED, "test-reason");
     properties.setRunStrategy(RunStrategy.create("strict_sequential"));
     AssertHelper.assertThrows(
@@ -1156,8 +1175,7 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     initiator.setAncestors(Collections.singletonList(parent));
     instance.setInitiator(initiator);
 
-    instanceDao.runWorkflowInstances(
-        TEST_INLINE_WORKFLOW_ID1, Collections.singletonList(instance), 1);
+    instanceDao.runWorkflowInstances(TEST_INLINE_WORKFLOW_ID1, Collections.singletonList(instance));
 
     WorkflowDefinition wfd = loadWorkflow(TEST_WORKFLOW_ID1);
     workflowDao.addWorkflowDefinition(wfd, wfd.getPropertiesSnapshot().extractProperties());
@@ -1211,8 +1229,8 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertEquals(1, results.getTimelineEvents().size());
     assertEquals(
         "Created a new workflow version [1] for workflow id [sample-active-wf-with-props]",
-        results.getTimelineEvents().get(0).getLog());
-    assertEquals(1598399975650L, results.getTimelineEvents().get(0).getTimestamp());
+        results.getTimelineEvents().getFirst().getLog());
+    assertEquals(1598399975650L, results.getTimelineEvents().getFirst().getTimestamp());
   }
 
   @Test
@@ -1280,12 +1298,10 @@ public class MaestroWorkflowDaoTest extends MaestroDaoBaseTest {
     assertNotNull(resetNotAllowed.getStepConcurrency());
     assertNotNull(resetNotAllowed.getOwner());
 
-    // alerting, description, run strategy, step concurrency will get reset when it's
-    // add_workflow path
+    // alerting, run strategy, step concurrency will get reset when it's add_workflow path
     Properties resetAllowed =
         new PropertiesUpdate(Type.ADD_WORKFLOW_DEFINITION).getNewProperties(newProps, ps);
     assertNull(resetAllowed.getAlerting());
-    assertNull(resetAllowed.getDescription());
     assertNull(resetAllowed.getRunStrategy());
     assertNull(resetAllowed.getStepConcurrency());
 

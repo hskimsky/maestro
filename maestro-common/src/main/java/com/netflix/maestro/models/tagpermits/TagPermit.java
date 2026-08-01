@@ -12,30 +12,73 @@
  */
 package com.netflix.maestro.models.tagpermits;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
+import com.netflix.maestro.models.timeline.Timeline;
+import com.netflix.maestro.utils.Checks;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /** Data model for tag permit. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
-    value = {"tag", "current_used", "max_allowed"},
+    value = {"tag", "max_allowed", "timeline"},
     alphabetic = true)
 @NoArgsConstructor
 @Data
 public class TagPermit {
+  /** reserved fields cannot be set within extraInfo. */
+  private static final Set<String> RESERVED_FIELDS =
+      new HashSet<>(Arrays.asList("tag", "max_allowed", "timeline"));
+
   private String tag;
   private int maxAllowed;
-  private int currentUsed;
+  private Timeline timeline;
+  private Map<String, Object> extraInfo = new LinkedHashMap<>();
 
   /** Constructor. */
-  public TagPermit(String tag, int maxAllowed, int currentUsed) {
+  public TagPermit(String tag, int maxAllowed, Timeline timeline, Map<String, Object> extraInfo) {
     this.tag = tag;
     this.maxAllowed = maxAllowed;
-    this.currentUsed = currentUsed;
+    this.timeline = timeline;
+    if (extraInfo != null) {
+      this.extraInfo = validateExtraInfo(extraInfo);
+    }
+  }
+
+  /** set extra info with validation. */
+  public void setExtraInfo(Map<String, Object> extraInfo) {
+    this.extraInfo = extraInfo == null ? new LinkedHashMap<>() : validateExtraInfo(extraInfo);
+  }
+
+  private static Map<String, Object> validateExtraInfo(Map<String, Object> extraInfo) {
+    Checks.checkTrue(
+        RESERVED_FIELDS.stream().noneMatch(extraInfo::containsKey),
+        "extra info %s cannot contain any reserved keys %s",
+        extraInfo.keySet(),
+        RESERVED_FIELDS);
+    return extraInfo;
+  }
+
+  /** extraInfo includes optional extra information associated with the tag permit. */
+  @JsonAnyGetter
+  public Map<String, Object> getExtraInfo() {
+    return extraInfo;
+  }
+
+  /** Add fields to extraInfo. */
+  @JsonAnySetter
+  public void add(String name, Object value) {
+    extraInfo.put(name, value);
   }
 }

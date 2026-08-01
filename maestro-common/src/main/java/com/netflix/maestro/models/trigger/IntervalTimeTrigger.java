@@ -15,17 +15,20 @@ package com.netflix.maestro.models.trigger;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.annotations.SuppressFBWarnings;
 import java.util.Date;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /** Interval based Time Trigger. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@EqualsAndHashCode(callSuper = true)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(alphabetic = true)
 @Data
+@SuppressWarnings("PMD.ReplaceJavaUtilDate")
 public class IntervalTimeTrigger extends TimeTriggerWithJitter {
   private String interval;
 

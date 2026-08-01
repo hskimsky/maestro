@@ -14,37 +14,60 @@ package com.netflix.maestro.engine.tasks;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.netflix.maestro.engine.MaestroEngineBaseTest;
+import com.netflix.maestro.engine.dao.MaestroStepInstanceActionDao;
 import com.netflix.maestro.engine.db.DbOperation;
+import com.netflix.maestro.engine.db.StepAction;
+import com.netflix.maestro.engine.execution.StepRuntimeCallbackDelayPolicy;
+import com.netflix.maestro.engine.execution.StepRuntimeManager;
 import com.netflix.maestro.engine.execution.StepRuntimeSummary;
 import com.netflix.maestro.engine.execution.WorkflowSummary;
-import com.netflix.maestro.engine.jobevents.StepInstanceUpdateJobEvent;
+import com.netflix.maestro.engine.handlers.SignalHandler;
+import com.netflix.maestro.engine.params.OutputDataManager;
+import com.netflix.maestro.flow.models.Flow;
+import com.netflix.maestro.flow.models.Task;
+import com.netflix.maestro.models.Actions;
+import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.models.Defaults;
+import com.netflix.maestro.models.definition.ParsableLong;
 import com.netflix.maestro.models.definition.RetryPolicy;
+import com.netflix.maestro.models.definition.Step;
 import com.netflix.maestro.models.instance.RestartConfig;
 import com.netflix.maestro.models.instance.RunPolicy;
 import com.netflix.maestro.models.instance.StepInstance;
 import com.netflix.maestro.models.instance.StepRuntimeState;
+import com.netflix.maestro.models.signal.SignalOutputs;
 import com.netflix.maestro.models.timeline.Timeline;
 import com.netflix.maestro.models.timeline.TimelineEvent;
 import com.netflix.maestro.models.timeline.TimelineLogEvent;
+import com.netflix.maestro.queue.jobevents.StepInstanceUpdateJobEvent;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Mock;
 
 public class MaestroTaskTest extends MaestroEngineBaseTest {
 
-  private MaestroTask maestroTask;
+  @Mock private MaestroStepInstanceActionDao actionDao;
+  @Mock private StepRuntimeManager stepRuntimeManager;
+  @Mock private MaestroTask maestroTask;
 
   @Before
   public void setup() {
-    maestroTask = mock(MaestroTask.class);
     doCallRealMethod().when(maestroTask).updateRetryDelayTimeToTimeline(any());
     when(maestroTask.isStepSkipped(any(), any())).thenCallRealMethod();
   }
@@ -58,8 +81,8 @@ public class MaestroTaskTest extends MaestroEngineBaseTest {
     stepRetry.setRetryable(true);
     RetryPolicy.FixedBackoff fixedBackoff =
         RetryPolicy.FixedBackoff.builder()
-            .errorRetryBackoffInSecs(100L)
-            .platformRetryBackoffInSecs(200L)
+            .errorRetryBackoffInSecs(ParsableLong.of(100L))
+            .platformRetryBackoffInSecs(ParsableLong.of(200L))
             .build();
     stepRetry.setBackoff(fixedBackoff);
     StepRuntimeSummary runtimeSummary =
@@ -78,13 +101,58 @@ public class MaestroTaskTest extends MaestroEngineBaseTest {
 
     RetryPolicy.ExponentialBackoff exponentialBackoff =
         RetryPolicy.ExponentialBackoff.builder()
-            .errorRetryExponent(2)
-            .errorRetryLimitInSecs(600L)
-            .errorRetryBackoffInSecs(100L)
-            .platformRetryBackoffInSecs(200L)
+            .errorRetryExponent(ParsableLong.of(2))
+            .errorRetryLimitInSecs(ParsableLong.of(600L))
+            .errorRetryBackoffInSecs(ParsableLong.of(100L))
+            .platformRetryBackoffInSecs(ParsableLong.of(200L))
             .build();
     stepRetry.setBackoff(exponentialBackoff);
     stepRetry.setErrorRetries(6);
+    timelineEvents.clear();
+    maestroTask.updateRetryDelayTimeToTimeline(runtimeSummary);
+    assertThat(timelineEvents)
+        .hasSize(1)
+        .usingRecursiveFieldByFieldElementComparatorIgnoringFields("timestamp")
+        .contains(TimelineLogEvent.info("Retrying task in [10m]"));
+
+    timelineEvents.clear();
+    runtimeState.setStatus(StepInstance.Status.PAUSED);
+    maestroTask.updateRetryDelayTimeToTimeline(runtimeSummary);
+    assertThat(timelineEvents).isEmpty();
+  }
+
+  @Test
+  public void testUpdateTimeoutRetryDelayTimeToTimeline() {
+    StepRuntimeState runtimeState = new StepRuntimeState();
+    runtimeState.setStatus(StepInstance.Status.TIMEOUT_FAILED);
+    Timeline timeline = new Timeline(new ArrayList<>());
+    StepInstance.StepRetry stepRetry = new StepInstance.StepRetry();
+    stepRetry.setRetryable(true);
+    RetryPolicy.FixedBackoff fixedBackoff =
+        RetryPolicy.FixedBackoff.builder().timeoutRetryBackoffInSecs(ParsableLong.of(200L)).build();
+    stepRetry.setBackoff(fixedBackoff);
+    StepRuntimeSummary runtimeSummary =
+        StepRuntimeSummary.builder()
+            .timeline(timeline)
+            .runtimeState(runtimeState)
+            .stepRetry(stepRetry)
+            .build();
+
+    maestroTask.updateRetryDelayTimeToTimeline(runtimeSummary);
+    List<TimelineEvent> timelineEvents = timeline.getTimelineEvents();
+    assertThat(timelineEvents)
+        .hasSize(1)
+        .usingRecursiveFieldByFieldElementComparatorIgnoringFields("timestamp")
+        .contains(TimelineLogEvent.info("Retrying task in [3m 20s]"));
+
+    RetryPolicy.ExponentialBackoff exponentialBackoff =
+        RetryPolicy.ExponentialBackoff.builder()
+            .timeoutRetryExponent(ParsableLong.of(2))
+            .timeoutRetryLimitInSecs(ParsableLong.of(600L))
+            .timeoutRetryBackoffInSecs(ParsableLong.of(100L))
+            .build();
+    stepRetry.setBackoff(exponentialBackoff);
+    stepRetry.setTimeoutRetries(6);
     timelineEvents.clear();
     maestroTask.updateRetryDelayTimeToTimeline(runtimeSummary);
     assertThat(timelineEvents)
@@ -191,5 +259,277 @@ public class MaestroTaskTest extends MaestroEngineBaseTest {
         .contains(
             StepInstanceUpdateJobEvent.createRecord(
                 StepInstance.Status.USER_FAILED, StepInstance.Status.SKIPPED, 0L));
+  }
+
+  @Test
+  public void testParseRetryPolicy() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    StepInstance.StepRetry actual = initializeStepRetry(false, workflowSummary);
+
+    // Verify retry parameters are correctly parsed.
+    Assert.assertEquals(5, actual.getErrorRetryLimit());
+    Assert.assertEquals(3, actual.getPlatformRetryLimit());
+    Assert.assertEquals(1, actual.getTimeoutRetryLimit());
+    Assert.assertEquals(200, actual.getBackoff().getNextRetryDelayForUserError(1));
+    Assert.assertEquals(350, actual.getBackoff().getNextRetryDelayForUserError(2));
+    Assert.assertEquals(900, actual.getBackoff().getNextRetryDelayForPlatformError(1));
+    Assert.assertEquals(1000, actual.getBackoff().getNextRetryDelayForPlatformError(2));
+    Assert.assertEquals(1000, actual.getBackoff().getNextRetryDelayForTimeoutError(1));
+    Assert.assertEquals(5000, actual.getBackoff().getNextRetryDelayForTimeoutError(2));
+  }
+
+  @Test
+  public void testParseRetryPolicyWithParams() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    workflowSummary.setParams(
+        Map.of(
+            "foo", buildParam("foo", 3L),
+            "far", buildParam("far", 100L),
+            "bar", buildParam("bar", 10L),
+            "bat", buildParam("bat", "2"),
+            "baz", buildParam("baz", "30min")));
+    StepInstance.StepRetry actual = initializeStepRetry(true, workflowSummary);
+
+    // Verify retry parameters are correctly parsed.
+    Assert.assertEquals(3, actual.getErrorRetryLimit());
+    Assert.assertEquals(10, actual.getPlatformRetryLimit());
+    Assert.assertEquals(2, actual.getTimeoutRetryLimit());
+    Assert.assertEquals(200, actual.getBackoff().getNextRetryDelayForUserError(1));
+    Assert.assertEquals(800, actual.getBackoff().getNextRetryDelayForUserError(3));
+    Assert.assertEquals(1800, actual.getBackoff().getNextRetryDelayForUserError(10));
+    Assert.assertEquals(200, actual.getBackoff().getNextRetryDelayForPlatformError(1));
+    Assert.assertEquals(800, actual.getBackoff().getNextRetryDelayForPlatformError(3));
+    Assert.assertEquals(1800, actual.getBackoff().getNextRetryDelayForPlatformError(10));
+    Assert.assertEquals(200, actual.getBackoff().getNextRetryDelayForTimeoutError(1));
+    Assert.assertEquals(800, actual.getBackoff().getNextRetryDelayForTimeoutError(3));
+    Assert.assertEquals(1800, actual.getBackoff().getNextRetryDelayForTimeoutError(10));
+  }
+
+  @Test
+  public void testParseRetryPolicyWithErrorFallback() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    workflowSummary.setParams(
+        Map.of(
+            "foo", buildParam("foo", 3L),
+            "far", buildParam("far", 100L),
+            "bar", buildParam("bar", 100L),
+            "bat", buildParam("bat", "2"),
+            "baz", buildParam("baz", "1800")));
+    StepInstance.StepRetry actual = initializeStepRetry(true, workflowSummary);
+
+    // Verify retry parameters use fallback default.
+    Assert.assertEquals(2, actual.getErrorRetryLimit());
+    Assert.assertEquals(10, actual.getPlatformRetryLimit());
+    Assert.assertEquals(0, actual.getTimeoutRetryLimit());
+    Assert.assertEquals(Defaults.DEFAULT_EXPONENTIAL_BACK_OFF, actual.getBackoff());
+  }
+
+  @Test
+  public void testParseRetryPolicyWithInvalidDurationFallback() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    workflowSummary.setParams(
+        Map.of(
+            "foo", buildParam("foo", 3L),
+            "far", buildParam("far", 100L),
+            "bar", buildParam("bar", 10L),
+            "bat", buildParam("bat", "2"),
+            "baz", buildParam("baz", "abc")));
+    StepInstance.StepRetry actual = initializeStepRetry(true, workflowSummary);
+
+    // Verify retry parameters use fallback default.
+    Assert.assertEquals(2, actual.getErrorRetryLimit());
+    Assert.assertEquals(10, actual.getPlatformRetryLimit());
+    Assert.assertEquals(0, actual.getTimeoutRetryLimit());
+    Assert.assertEquals(Defaults.DEFAULT_EXPONENTIAL_BACK_OFF, actual.getBackoff());
+  }
+
+  @Test
+  public void testParseRetryPolicyWithNotFoundParamFallback() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    workflowSummary.setParams(Map.of());
+    StepInstance.StepRetry actual = initializeStepRetry(true, workflowSummary);
+
+    // Verify retry parameters use fallback default.
+    Assert.assertEquals(2, actual.getErrorRetryLimit());
+    Assert.assertEquals(10, actual.getPlatformRetryLimit());
+    Assert.assertEquals(0, actual.getTimeoutRetryLimit());
+    Assert.assertEquals(Defaults.DEFAULT_EXPONENTIAL_BACK_OFF, actual.getBackoff());
+  }
+
+  private StepInstance.StepRetry initializeStepRetry(
+      boolean withParams, WorkflowSummary workflowSummary) throws Exception {
+    Step stepDef =
+        withParams
+            ? loadObject("fixtures/typedsteps/sample-step-with-param-retries.json", Step.class)
+            : loadObject("fixtures/typedsteps/sample-step-with-retries.json", Step.class);
+    StepRuntimeSummary runtimeSummary =
+        createAndRunMaestroTask(0, null, stepDef, null, workflowSummary);
+    return runtimeSummary.getStepRetry();
+  }
+
+  private StepRuntimeSummary createAndRunMaestroTask(
+      int runCode,
+      Flow.Status status,
+      Step stepDef,
+      StepRuntimeSummary input,
+      WorkflowSummary workflowSummary) {
+    SignalHandler signalHandler = mock(SignalHandler.class);
+    when(signalHandler.sendOutputSignals(any(), any())).thenReturn(true);
+    maestroTask =
+        new MaestroTask(
+            stepRuntimeManager,
+            null,
+            paramEvaluator,
+            MAPPER,
+            signalHandler,
+            mock(OutputDataManager.class),
+            null,
+            actionDao,
+            null,
+            null,
+            mock(StepRuntimeCallbackDelayPolicy.class),
+            metricRepo,
+            null,
+            paramExtensionRepo);
+    Task task = mock(Task.class);
+    when(task.referenceTaskName()).thenReturn("job1");
+    Map<String, Object> runtimeSummaryMap = new HashMap<>();
+    runtimeSummaryMap.put(Constants.STEP_RUNTIME_SUMMARY_FIELD, input);
+    when(task.getOutputData()).thenReturn(runtimeSummaryMap);
+
+    Flow flow = mock(Flow.class);
+    workflowSummary.setWorkflowId("test-workflow");
+    workflowSummary.setWorkflowInstanceId(1L);
+    workflowSummary.setWorkflowRunId(1L);
+    workflowSummary.setStepMap(Map.of("job1", stepDef));
+    when(flow.getInput()).thenReturn(Map.of(Constants.WORKFLOW_SUMMARY_FIELD, workflowSummary));
+    when(flow.getPrepareTask()).thenReturn(task);
+    when(flow.getStatus()).thenReturn(status);
+
+    if (runCode == 0) { // start
+      maestroTask.start(flow, task);
+    } else if (runCode == 1) { // execute
+      Assert.assertTrue(maestroTask.execute(flow, task));
+    } else { // cancel
+      maestroTask.cancel(flow, task);
+    }
+    return (StepRuntimeSummary) runtimeSummaryMap.get(Constants.STEP_RUNTIME_SUMMARY_FIELD);
+  }
+
+  @Test
+  public void testNoDynamicOutputInStepOutputs() throws Exception {
+    Step stepDef = loadObject("fixtures/typedsteps/sample-typed-step.json", Step.class);
+    StepRuntimeSummary input =
+        loadObject("fixtures/execution/sample-step-runtime-summary.json", StepRuntimeSummary.class);
+    StepRuntimeSummary runtimeSummary =
+        createAndRunMaestroTask(1, null, stepDef, input, new WorkflowSummary());
+
+    // verify there is only one static signal
+    SignalOutputs outputs = runtimeSummary.getSignalOutputs();
+    Assert.assertEquals(1, outputs.getOutputs().size());
+  }
+
+  @Test
+  public void testOnlyDynamicOutputInStepOutputs() throws Exception {
+    Step stepDef = loadObject("fixtures/typedsteps/sample-step-with-retries.json", Step.class);
+    StepRuntimeSummary input =
+        loadObject(
+            "fixtures/execution/sample-step-runtime-summary-with-dynamic-output.json",
+            StepRuntimeSummary.class);
+    StepRuntimeSummary runtimeSummary =
+        createAndRunMaestroTask(1, null, stepDef, input, new WorkflowSummary());
+
+    // verify there are two dynamic signals
+    SignalOutputs outputs = runtimeSummary.getSignalOutputs();
+    Assert.assertEquals(2, outputs.getOutputs().size());
+    Set<String> dynamicOutputNames = new HashSet<>();
+    for (SignalOutputs.SignalOutput output : outputs.getOutputs()) {
+      String tableName = output.getName();
+      dynamicOutputNames.add(tableName);
+    }
+    Assert.assertEquals(Set.of("table_1", "table_2"), dynamicOutputNames);
+  }
+
+  @Test
+  public void testOutputInStepOutputs() throws Exception {
+    Step stepDef = loadObject("fixtures/typedsteps/sample-typed-step.json", Step.class);
+    StepRuntimeSummary input =
+        loadObject(
+            "fixtures/execution/sample-step-runtime-summary-with-dynamic-output.json",
+            StepRuntimeSummary.class);
+    StepRuntimeSummary runtimeSummary =
+        createAndRunMaestroTask(1, null, stepDef, input, new WorkflowSummary());
+
+    // verify there are 3 output signals:  1 static + 2 dynamic
+    SignalOutputs outputs = runtimeSummary.getSignalOutputs();
+    Assert.assertEquals(3, outputs.getOutputs().size());
+    boolean[] signalFound = new boolean[] {false, false, false}; // static, dynamic_1, dynamic_2
+    for (SignalOutputs.SignalOutput output : outputs.getOutputs()) {
+      String tableName = output.getName();
+      if (tableName.startsWith("table_")) {
+        int index = Integer.parseInt(tableName.substring(6));
+        signalFound[index] = true;
+      }
+      if (tableName.equals("table_1")) {
+        Map<String, Object> evaluated = output.getPayload();
+        Assert.assertTrue((Boolean) evaluated.get("is_iceberg"));
+        Map<String, Object> nestedMap = (Map<String, Object>) evaluated.get("nested_map");
+        Assert.assertArrayEquals(
+            new String[] {"a", "b", "c"}, (String[]) nestedMap.get("nested_string_array"));
+        Assert.assertArrayEquals(new long[] {1, 2, 3}, (long[]) nestedMap.get("nested_long_array"));
+        Assert.assertArrayEquals(
+            new boolean[] {true, false, true}, (boolean[]) nestedMap.get("nested_boolean_array"));
+        Assert.assertArrayEquals(
+            new double[] {1.1, 2.2, 3.3}, (double[]) nestedMap.get("nested_double_array"), 0.001);
+        Map<String, String> nestedStringMap =
+            (Map<String, String>) nestedMap.get("nested_string_map");
+        Assert.assertEquals(1, nestedStringMap.size());
+        Assert.assertEquals("bar", nestedStringMap.get("foo"));
+      }
+    }
+    Assert.assertArrayEquals(new boolean[] {true, true, true}, signalFound);
+  }
+
+  @Test
+  public void testCancelWithTimeOutFlowStatus() throws Exception {
+    testCancel(Flow.Status.TIMED_OUT, StepInstance.Status.TIMED_OUT);
+  }
+
+  @Test
+  public void testCancelWithStoppedFlowStatus() throws Exception {
+    testCancel(Flow.Status.RUNNING, StepInstance.Status.STOPPED);
+  }
+
+  private void testCancel(Flow.Status flowStatus, StepInstance.Status stepStatus) throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    Step stepDefinition = loadObject("fixtures/typedsteps/sample-typed-step.json", Step.class);
+    StepRuntimeSummary runtimeSummary =
+        loadObject("fixtures/execution/sample-step-runtime-summary.json", StepRuntimeSummary.class);
+
+    createAndRunMaestroTask(2, flowStatus, stepDefinition, runtimeSummary, workflowSummary);
+
+    verify(stepRuntimeManager).terminate(eq(workflowSummary), eq(runtimeSummary), eq(stepStatus));
+  }
+
+  @Test
+  public void testExecuteWithTimeOutAction() throws Exception {
+    WorkflowSummary workflowSummary = new WorkflowSummary();
+    Step stepDef = loadObject("fixtures/typedsteps/sample-typed-step.json", Step.class);
+    StepRuntimeSummary runtimeSummary =
+        loadObject("fixtures/execution/sample-step-runtime-summary.json", StepRuntimeSummary.class);
+
+    StepAction timeoutAction =
+        StepAction.builder()
+            .action(Actions.StepInstanceAction.TIME_OUT)
+            .workflowId("test-workflow")
+            .workflowInstanceId(1)
+            .build();
+    when(actionDao.tryGetAction(workflowSummary, stepDef.getId()))
+        .thenReturn(Optional.of(timeoutAction));
+
+    createAndRunMaestroTask(1, Flow.Status.RUNNING, stepDef, runtimeSummary, workflowSummary);
+
+    verify(stepRuntimeManager)
+        .terminate(eq(workflowSummary), eq(runtimeSummary), eq(StepInstance.Status.TIMED_OUT));
   }
 }

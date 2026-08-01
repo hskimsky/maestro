@@ -13,17 +13,26 @@
 package com.netflix.maestro.server.properties;
 
 import com.netflix.maestro.engine.properties.SelProperties;
+import com.netflix.maestro.engine.properties.StepActionProperties;
 import com.netflix.maestro.models.Constants;
+import com.netflix.maestro.queue.properties.QueueProperties;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.ConstructorBinding;
 
 /** Maestro engine related config properties. */
 @AllArgsConstructor
 @Getter
-@ConstructorBinding
 @ConfigurationProperties(prefix = Constants.MAESTRO_QUALIFIER)
 public class MaestroProperties {
+  private final QueueProperties queue;
   private final SelProperties sel;
+  private final ParamEvaluatorProperties paramEvaluator;
+  private final StepActionProperties stepAction;
+  private final MaestroIdNameValidationProperties maestroIdNameValidation;
+
+  /** Returns the param evaluator properties, defaulting to {@code __} separator if not set. */
+  public ParamEvaluatorProperties getParamEvaluator() {
+    return paramEvaluator != null ? paramEvaluator : new ParamEvaluatorProperties();
+  }
 }

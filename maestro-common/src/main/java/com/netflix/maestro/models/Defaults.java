@@ -13,14 +13,14 @@
 package com.netflix.maestro.models;
 
 import com.netflix.maestro.models.definition.FailureMode;
+import com.netflix.maestro.models.definition.ParsableLong;
 import com.netflix.maestro.models.definition.RetryPolicy;
 import com.netflix.maestro.models.definition.RunStrategy;
 import com.netflix.maestro.models.definition.TagList;
 import com.netflix.maestro.models.instance.RunPolicy;
 import com.netflix.maestro.models.instance.StepInstance;
 import com.netflix.maestro.models.parameter.ParamMode;
-import java.util.TimeZone;
-import org.joda.time.DateTimeZone;
+import java.time.ZoneId;
 
 /** Class to hold the user facing default values for unset fields. */
 public final class Defaults {
@@ -38,6 +38,9 @@ public final class Defaults {
 
   /** Defaults for fixed retry delay for user errors. */
   private static final long DEFAULT_FIXED_USER_RETRY_BACKOFF_SECS = 60L;
+
+  /** Defaults for fixed retry delay for timeout errors. */
+  private static final long DEFAULT_FIXED_TIMEOUT_RETRY_BACKOFF_SECS = 60L;
 
   /** Defaults for exponential retry exponent for user errors. */
   private static final int DEFAULT_ERROR_RETRY_EXPONENT = 2;
@@ -57,32 +60,47 @@ public final class Defaults {
   /** Defaults for exponential max retry limit for platform errors. */
   private static final long DEFAULT_PLATFORM_RETRY_LIMIT_SECS = 3600L;
 
+  /** Defaults for exponential retry exponent for timeout errors. */
+  private static final int DEFAULT_TIMEOUT_RETRY_EXPONENT = 2;
+
+  /** Defaults for exponential retry base backoff for timeout errors. */
+  private static final long DEFAULT_BASE_TIMEOUT_RETRY_BACKOFF_SECS = 60L;
+
+  /** Defaults for exponential max retry limit for timeout errors. */
+  private static final long DEFAULT_TIMEOUT_RETRY_LIMIT_SECS = 3600L;
+
   /** Default Exponential backoff. */
   public static final RetryPolicy.ExponentialBackoff DEFAULT_EXPONENTIAL_BACK_OFF =
       RetryPolicy.ExponentialBackoff.builder()
-          .errorRetryExponent(DEFAULT_ERROR_RETRY_EXPONENT)
-          .errorRetryBackoffInSecs(DEFAULT_BASE_ERROR_RETRY_BACKOFF_SECS)
-          .errorRetryLimitInSecs(DEFAULT_ERROR_RETRY_LIMIT_SECS)
-          .platformRetryBackoffInSecs(DEFAULT_BASE_PLATFORM_RETRY_BACKOFF_SECS)
-          .platformRetryExponent(DEFAULT_PLATFORM_RETRY_EXPONENT)
-          .platformRetryLimitInSecs(DEFAULT_PLATFORM_RETRY_LIMIT_SECS)
+          .errorRetryExponent(ParsableLong.of(DEFAULT_ERROR_RETRY_EXPONENT))
+          .errorRetryBackoffInSecs(ParsableLong.of(DEFAULT_BASE_ERROR_RETRY_BACKOFF_SECS))
+          .errorRetryLimitInSecs(ParsableLong.of(DEFAULT_ERROR_RETRY_LIMIT_SECS))
+          .platformRetryExponent(ParsableLong.of(DEFAULT_PLATFORM_RETRY_EXPONENT))
+          .platformRetryBackoffInSecs(ParsableLong.of(DEFAULT_BASE_PLATFORM_RETRY_BACKOFF_SECS))
+          .platformRetryLimitInSecs(ParsableLong.of(DEFAULT_PLATFORM_RETRY_LIMIT_SECS))
+          .timeoutRetryExponent(ParsableLong.of(DEFAULT_TIMEOUT_RETRY_EXPONENT))
+          .timeoutRetryBackoffInSecs(ParsableLong.of(DEFAULT_BASE_TIMEOUT_RETRY_BACKOFF_SECS))
+          .timeoutRetryLimitInSecs(ParsableLong.of(DEFAULT_TIMEOUT_RETRY_LIMIT_SECS))
           .build();
 
   /** Default Fixed backoff. */
   public static final RetryPolicy.FixedBackoff DEFAULT_FIXED_BACK_OFF =
       RetryPolicy.FixedBackoff.builder()
-          .platformRetryBackoffInSecs(DEFAULT_FIXED_PLATFORM_RETRY_BACKOFF_SECS)
-          .errorRetryBackoffInSecs(DEFAULT_FIXED_USER_RETRY_BACKOFF_SECS)
+          .errorRetryBackoffInSecs(ParsableLong.of(DEFAULT_FIXED_USER_RETRY_BACKOFF_SECS))
+          .platformRetryBackoffInSecs(ParsableLong.of(DEFAULT_FIXED_PLATFORM_RETRY_BACKOFF_SECS))
+          .timeoutRetryBackoffInSecs(ParsableLong.of(DEFAULT_FIXED_TIMEOUT_RETRY_BACKOFF_SECS))
           .build();
 
   private static final long DEFAULT_USER_RETRY_LIMIT = 2L;
   private static final long DEFAULT_PLATFORM_RETRY_LIMIT = 10L;
+  private static final long DEFAULT_TIMEOUT_RETRY_LIMIT = 0L;
 
   /** Default retry policy if unset. */
   public static final RetryPolicy DEFAULT_RETRY_POLICY =
       RetryPolicy.builder()
-          .errorRetryLimit(DEFAULT_USER_RETRY_LIMIT)
-          .platformRetryLimit(DEFAULT_PLATFORM_RETRY_LIMIT)
+          .errorRetryLimit(ParsableLong.of(DEFAULT_USER_RETRY_LIMIT))
+          .platformRetryLimit(ParsableLong.of(DEFAULT_PLATFORM_RETRY_LIMIT))
+          .timeoutRetryLimit(ParsableLong.of(DEFAULT_TIMEOUT_RETRY_LIMIT))
           .backoff(DEFAULT_EXPONENTIAL_BACK_OFF)
           .build();
 
@@ -102,8 +120,8 @@ public final class Defaults {
   public static final StepInstance.Status DEFAULT_STEP_INSTANCE_INITIAL_STATUS =
       StepInstance.Status.NOT_CREATED;
 
-  /** Default Time Zone. * */
-  public static final TimeZone DEFAULT_TIMEZONE = DateTimeZone.UTC.toTimeZone();
+  /** Default Time Zone. */
+  public static final ZoneId DEFAULT_TIMEZONE = ZoneId.of("UTC");
 
   /** Default Param Mode. */
   public static final ParamMode DEFAULT_PARAM_MODE = ParamMode.MUTABLE;

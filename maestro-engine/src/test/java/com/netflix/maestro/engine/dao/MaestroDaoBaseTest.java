@@ -14,31 +14,16 @@ package com.netflix.maestro.engine.dao;
 
 import static org.junit.Assert.assertEquals;
 
-import com.netflix.conductor.cockroachdb.CockroachDBConfiguration;
-import com.netflix.conductor.cockroachdb.CockroachDBDataSourceProvider;
-import com.netflix.maestro.engine.MaestroDBTestConfiguration;
+import com.netflix.maestro.database.DatabaseConfiguration;
+import com.netflix.maestro.database.MaestroDatabaseHelper;
 import com.netflix.maestro.engine.MaestroEngineBaseTest;
 import com.netflix.maestro.models.definition.WorkflowDefinition;
 import com.netflix.maestro.utils.IdHelper;
 import javax.sql.DataSource;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 
 public abstract class MaestroDaoBaseTest extends MaestroEngineBaseTest {
-  protected static CockroachDBConfiguration config;
-  protected static DataSource dataSource;
-
-  @BeforeClass
-  public static void init() {
-    MaestroEngineBaseTest.init();
-    config = new MaestroDBTestConfiguration();
-    dataSource = new CockroachDBDataSourceProvider(config).get();
-  }
-
-  @AfterClass
-  public static void destroy() {
-    MaestroEngineBaseTest.destroy();
-  }
+  protected static final DatabaseConfiguration CONFIG = MaestroDatabaseHelper.getConfig();
+  protected static final DataSource DATA_SOURCE = MaestroDatabaseHelper.getDataSource();
 
   protected WorkflowDefinition loadWorkflow(String workflowId) throws Exception {
     WorkflowDefinition wfd =

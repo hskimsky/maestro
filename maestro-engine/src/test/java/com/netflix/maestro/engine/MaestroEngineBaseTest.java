@@ -19,11 +19,8 @@ import com.netflix.maestro.engine.eval.ParamEvaluator;
 import com.netflix.maestro.engine.metrics.MaestroMetricRepo;
 import com.netflix.maestro.engine.properties.SelProperties;
 import com.netflix.spectator.api.DefaultRegistry;
-import org.junit.After;
 import org.junit.AfterClass;
-import org.junit.Before;
 import org.junit.BeforeClass;
-import org.mockito.MockitoAnnotations;
 
 /** Maestro engine test base class. */
 public abstract class MaestroEngineBaseTest extends MaestroBaseTest {
@@ -37,19 +34,16 @@ public abstract class MaestroEngineBaseTest extends MaestroBaseTest {
   public static void init() {
     MaestroBaseTest.init();
     paramExtensionRepo = new MaestroParamExtensionRepo(null, null, MaestroBaseTest.MAPPER);
-    evaluator =
-        new ExprEvaluator(
-            SelProperties.builder()
-                .threadNum(3)
-                .timeoutMillis(120000)
-                .stackLimit(128)
-                .loopLimit(10000)
-                .arrayLimit(10000)
-                .lengthLimit(10000)
-                .visitLimit(100000000L)
-                .memoryLimit(10000000L)
-                .build(),
-            paramExtensionRepo);
+    var props = new SelProperties();
+    props.setThreadNum(3);
+    props.setTimeoutMillis(120000);
+    props.setStackLimit(128);
+    props.setLoopLimit(10000);
+    props.setArrayLimit(10000);
+    props.setLengthLimit(10000);
+    props.setVisitLimit(100000000L);
+    props.setMemoryLimit(10000000L);
+    evaluator = new ExprEvaluator(props, paramExtensionRepo);
     evaluator.postConstruct();
     paramEvaluator = new ParamEvaluator(evaluator, MaestroBaseTest.MAPPER);
   }
@@ -59,18 +53,6 @@ public abstract class MaestroEngineBaseTest extends MaestroBaseTest {
   public static void destroy() {
     evaluator.preDestroy();
     MaestroBaseTest.destroy();
-  }
-
-  private AutoCloseable closeable;
-
-  @Before
-  public void openMocks() {
-    closeable = MockitoAnnotations.openMocks(this);
-  }
-
-  @After
-  public void releaseMocks() throws Exception {
-    closeable.close();
   }
 
   static {

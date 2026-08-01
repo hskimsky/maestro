@@ -15,23 +15,27 @@ package com.netflix.maestro.models.definition;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.Defaults;
 import com.netflix.maestro.models.parameter.ParamDefinition;
+import com.netflix.maestro.models.signal.SignalDependenciesDefinition;
+import com.netflix.maestro.models.signal.SignalOutputsDefinition;
+import com.netflix.maestro.validations.MaestroNameSizeConstraint;
 import com.netflix.maestro.validations.MaestroReferenceIdConstraint;
-import com.netflix.maestro.validations.StepDependenciesDefinitionConstraint;
+import com.netflix.maestro.validations.SignalDependenciesDefinitionConstraint;
+import com.netflix.maestro.validations.SignalOutputsDefinitionConstraint;
 import com.netflix.maestro.validations.TagListConstraint;
 import com.netflix.maestro.validations.TimeoutConstraint;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import java.util.Map;
-import javax.validation.Valid;
-import javax.validation.constraints.Size;
 import lombok.Data;
 import lombok.Getter;
 
 /** Abstract base step class to include shared fields for all kinds of steps. */
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(alphabetic = true)
 @Data
@@ -41,7 +45,7 @@ public abstract class AbstractStep implements Step {
   private String id;
 
   @Getter(onMethod = @__({@Override}))
-  @Size(max = Constants.NAME_LENGTH_LIMIT)
+  @MaestroNameSizeConstraint
   private String name;
 
   @Getter(onMethod = @__({@Override}))
@@ -62,13 +66,12 @@ public abstract class AbstractStep implements Step {
 
   @Getter(onMethod = @__({@Override}))
   @TimeoutConstraint
-  private Duration timeout;
+  private ParsableLong timeout;
 
-  @Valid
-  private Map<StepDependencyType, @StepDependenciesDefinitionConstraint StepDependenciesDefinition>
-      dependencies;
+  @Valid @SignalDependenciesDefinitionConstraint
+  private SignalDependenciesDefinition signalDependencies;
 
-  @Valid private Map<StepOutputsDefinition.StepOutputType, StepOutputsDefinition> outputs;
+  @Valid @SignalOutputsDefinitionConstraint private SignalOutputsDefinition signalOutputs;
 
   @Getter(onMethod = @__({@Override}))
   @Valid

@@ -12,16 +12,16 @@
  */
 package com.netflix.maestro.validations;
 
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-import javax.validation.Constraint;
-import javax.validation.ConstraintValidator;
-import javax.validation.ConstraintValidatorContext;
-import javax.validation.Payload;
-import org.joda.time.DateTimeZone;
+import java.time.ZoneId;
 
 /** Maestro timezone expression validation. */
 @Documented
@@ -50,8 +50,8 @@ public @interface TimeZoneConstraint {
       }
 
       try {
-        DateTimeZone.forID(timezone);
-      } catch (IllegalArgumentException e) {
+        ZoneId.of(timezone);
+      } catch (Exception e) {
         context
             .buildConstraintViolationWithTemplate("[timezone expression] is not valid: " + e)
             .addConstraintViolation();

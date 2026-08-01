@@ -33,7 +33,6 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.function.Supplier;
-import lombok.Cleanup;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -73,13 +72,11 @@ public class MaestroStepBreakpointDaoTest extends MaestroDaoBaseTest {
   public void setUp() throws Exception {
     maestroStepBreakpointDao =
         new MaestroStepBreakpointDao(
-            dataSource, MAPPER, config, workflowDao, batchDeletionLimitSupplier);
-    conn = dataSource.getConnection();
-    Connection connection = dataSource.getConnection();
+            DATA_SOURCE, MAPPER, CONFIG, workflowDao, batchDeletionLimitSupplier, metricRepo);
+    conn = DATA_SOURCE.getConnection();
+    Connection connection = DATA_SOURCE.getConnection();
     wfd = loadWorkflow(SAMPLE_WORKFLOW_ID);
-    try {
-      @Cleanup
-      PreparedStatement stmt = connection.prepareStatement("TRUNCATE maestro_step_breakpoint");
+    try (PreparedStatement stmt = connection.prepareStatement("TRUNCATE maestro_step_breakpoint")) {
       stmt.execute();
       connection.commit();
       connection.close();

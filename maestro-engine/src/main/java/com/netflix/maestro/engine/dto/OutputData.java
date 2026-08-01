@@ -12,13 +12,15 @@
  */
 package com.netflix.maestro.engine.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.netflix.maestro.models.artifact.Artifact;
+import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.parameter.Parameter;
 import java.util.Map;
 import lombok.AllArgsConstructor;
@@ -29,7 +31,7 @@ import lombok.ToString;
 
 /** OutputData wrapper DTO. */
 @Getter
-@JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonDeserialize(builder = OutputData.OutputDataBuilder.class)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder(
@@ -46,7 +48,7 @@ import lombok.ToString;
 @ToString
 @Builder
 public class OutputData {
-  @Setter private ExternalJobType externalJobType;
+  @Setter private StepType externalJobType;
   @Setter private String externalJobId;
   @Setter private String workflowId;
   @Setter private Long createTime;
@@ -61,7 +63,12 @@ public class OutputData {
   }
 
   /** builder class for lombok and jackson. */
-  @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+  @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
   @JsonPOJOBuilder(withPrefix = "")
   public static final class OutputDataBuilder {}
+
+  @JsonIgnore
+  public boolean isNotEmpty() {
+    return (params != null && !params.isEmpty()) || (artifacts != null && !artifacts.isEmpty());
+  }
 }

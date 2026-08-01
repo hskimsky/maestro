@@ -19,7 +19,8 @@
         "instance_id": 1,
         "run_id": 1,
         "step_id": "test-step",
-        "step_attempt_id": 1
+        "step_attempt_id": 1,
+        "sync": false
       }
     ],
     "depth": 2,
@@ -50,6 +51,31 @@
     "depth": 3,
     "type": "FOREACH"
   },
+  "whileLoop": {
+    "ancestors": [
+      {
+        "workflow_id": "test-root",
+        "instance_id": 1,
+        "run_id": 1,
+        "step_id": "root-step",
+        "step_attempt_id": 1
+      }, {
+        "workflow_id": "test-parent",
+        "instance_id": 1,
+        "run_id": 1,
+        "step_id": "test-step",
+        "step_attempt_id": 1
+      }, {
+        "workflow_id": "maestro_while-parent",
+        "instance_id": 1,
+        "run_id": 1,
+        "step_id": "test-step",
+        "step_attempt_id": 1
+      }
+    ],
+    "depth": 3,
+    "type": "WHILE"
+  },
   "template": {
     "ancestors": [
       {
@@ -64,7 +90,8 @@
         "instance_id": 1,
         "run_id": 1,
         "step_id": "test-step",
-        "step_attempt_id": 1
+        "step_attempt_id": 1,
+        "sync": true
       }],
     "type": "TEMPLATE"
   },
@@ -75,7 +102,10 @@
   "signal": {
     "type": "SIGNAL",
     "trigger_uuid": "bar",
-    "signal_instance_ids": ["123", "345"],
+    "signal_id_map": {
+      "signal_a": 123,
+      "signal_b": 345
+    },
     "params": {
       "foo": {
         "value": "bar",

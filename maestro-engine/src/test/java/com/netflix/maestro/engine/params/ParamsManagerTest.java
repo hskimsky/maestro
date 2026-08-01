@@ -15,7 +15,6 @@ package com.netflix.maestro.engine.params;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netflix.maestro.AssertHelper;
 import com.netflix.maestro.engine.MaestroEngineBaseTest;
 import com.netflix.maestro.engine.eval.InstanceWrapper;
@@ -26,9 +25,6 @@ import com.netflix.maestro.engine.steps.StepRuntime;
 import com.netflix.maestro.exceptions.MaestroValidationException;
 import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.definition.Step;
-import com.netflix.maestro.models.definition.StepDependenciesDefinition;
-import com.netflix.maestro.models.definition.StepDependencyType;
-import com.netflix.maestro.models.definition.StepOutputsDefinition;
 import com.netflix.maestro.models.definition.StepType;
 import com.netflix.maestro.models.definition.TypedStep;
 import com.netflix.maestro.models.definition.User;
@@ -50,11 +46,11 @@ import com.netflix.maestro.models.parameter.MapParameter;
 import com.netflix.maestro.models.parameter.ParamDefinition;
 import com.netflix.maestro.models.parameter.ParamMode;
 import com.netflix.maestro.models.parameter.ParamSource;
-import com.netflix.maestro.models.parameter.ParamType;
 import com.netflix.maestro.models.parameter.Parameter;
 import com.netflix.maestro.models.parameter.StringParamDefinition;
 import com.netflix.maestro.models.parameter.StringParameter;
-import com.netflix.maestro.utils.JsonHelper;
+import com.netflix.maestro.models.signal.SignalDependenciesDefinition;
+import com.netflix.maestro.models.signal.SignalOutputsDefinition;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -75,7 +71,6 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
   private @Mock DefaultParamManager defaultParamManager;
   private ParamsManager paramsManager;
   private WorkflowSummary workflowSummary;
-  private ObjectMapper yamlMapper;
   private Workflow workflow;
   private DefaultParamManager defaultsManager;
   private StepRuntimeSummary runtimeSummary;
@@ -90,10 +85,9 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
 
   @Before
   public void setUp() throws IOException {
-    yamlMapper = JsonHelper.objectMapperWithYaml();
     defaultParamManager = Mockito.mock(DefaultParamManager.class);
     paramsManager = new ParamsManager(defaultParamManager);
-    defaultsManager = new DefaultParamManager(yamlMapper);
+    defaultsManager = new DefaultParamManager(YAML_MAPPER);
     defaultsManager.init();
     workflowSummary = new WorkflowSummary();
     workflowSummary.setWorkflowId("abc");
@@ -119,32 +113,28 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
 
   @Test
   public void testGetStepDependencyParams() throws Exception {
-    StepDependenciesDefinition stepDependency =
+    SignalDependenciesDefinition signalDependencies =
         loadObject(
-            "fixtures/parameters/step-dependency-params.json", StepDependenciesDefinition.class);
-    Map<StepDependencyType, List<MapParameter>> params =
-        ParamsManager.getStepDependenciesParameters(Collections.singletonList(stepDependency));
-    Assert.assertEquals(1, params.size());
-    List<MapParameter> signalParams = params.get(StepDependencyType.SIGNAL);
+            "fixtures/parameters/signal-dependency-params.json",
+            SignalDependenciesDefinition.class);
+    List<MapParameter> signalParams =
+        ParamsManager.getSignalDependenciesParameters(signalDependencies);
     Assert.assertEquals(1, signalParams.size());
-    Assert.assertEquals("signal_a", signalParams.get(0).getValue().get("name").getValue());
-    Assert.assertEquals("bar", signalParams.get(0).getValue().get("foo").getValue());
-    Assert.assertEquals(ParamType.SIGNAL, signalParams.get(0).getValue().get("foo").getType());
+    Assert.assertEquals("signal_a", signalParams.getFirst().getValue().get("name").getValue());
+    Assert.assertEquals("bar", signalParams.getFirst().getValue().get("foo").getValue());
 
     // same def can be loaded for outputs, the operator fields will be ignored.
-    StepOutputsDefinition outputs =
-        loadObject("fixtures/parameters/step-dependency-params.json", StepOutputsDefinition.class);
-    Map<StepOutputsDefinition.StepOutputType, List<MapParameter>> outParams =
-        ParamsManager.getStepOutputsParameters(Collections.singletonList(outputs));
-    Assert.assertEquals(1, outParams.size());
-    signalParams = outParams.get(StepOutputsDefinition.StepOutputType.SIGNAL);
+    SignalOutputsDefinition signalOutputs =
+        loadObject("fixtures/parameters/signal-output-params.json", SignalOutputsDefinition.class);
+    signalParams = ParamsManager.getSignalOutputsParameters(signalOutputs);
     Assert.assertEquals(1, signalParams.size());
-    Assert.assertEquals("signal_a", signalParams.get(0).getValue().get("name").getValue());
-    Assert.assertEquals("bar", signalParams.get(0).getValue().get("foo").getValue());
+    Assert.assertEquals("signal_a", signalParams.getFirst().getValue().get("name").getValue());
+    Assert.assertEquals("bar", signalParams.getFirst().getValue().get("foo").getValue());
 
     // empty check
-    outParams = ParamsManager.getStepOutputsParameters(Collections.emptyList());
-    Assert.assertTrue(outParams.isEmpty());
+    Assert.assertTrue(ParamsManager.getSignalOutputsParameters(null).isEmpty());
+    Assert.assertTrue(
+        ParamsManager.getSignalOutputsParameters(new SignalOutputsDefinition(null)).isEmpty());
   }
 
   @Test
@@ -180,10 +170,15 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         singletonMap(
             "stepid", singletonMap("p1", ParamDefinition.buildParamDefinition("p1", "d1")));
     ParamSource[] expectedSources =
-        new ParamSource[] {ParamSource.FOREACH, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE};
+        new ParamSource[] {
+          ParamSource.FOREACH, ParamSource.WHILE, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE
+        };
     Initiator.Type[] initiators =
         new Initiator.Type[] {
-          Initiator.Type.FOREACH, Initiator.Type.SUBWORKFLOW, Initiator.Type.TEMPLATE
+          Initiator.Type.FOREACH,
+          Initiator.Type.WHILE,
+          Initiator.Type.SUBWORKFLOW,
+          Initiator.Type.TEMPLATE
         };
     for (int i = 0; i < initiators.length; i++) {
       UpstreamInitiator upstreamInitiator = UpstreamInitiator.withType(initiators[i]);
@@ -268,6 +263,56 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
   }
 
   @Test
+  public void testInjectedJobTemplateParams() {
+    when(stepRuntime.injectRuntimeParams(any(), any()))
+        .thenReturn(singletonMap("p2", ParamDefinition.buildParamDefinition("p2", "d2")));
+    when(defaultParamManager.getDefaultParamsForType(any()))
+        .thenReturn(
+            Optional.of(singletonMap("p3", ParamDefinition.buildParamDefinition("p3", "d3"))));
+
+    Map<String, Parameter> stepParams =
+        paramsManager.generateMergedStepParams(workflowSummary, step, stepRuntime, runtimeSummary);
+
+    Assert.assertTrue(stepParams.containsKey("p2"));
+    Assert.assertTrue(stepParams.containsKey("p3"));
+    Assert.assertEquals("d2", stepParams.get("p2").asStringParam().getValue());
+    Assert.assertEquals("d3", stepParams.get("p3").asStringParam().getValue());
+    Assert.assertEquals(ParamSource.TEMPLATE_SCHEMA, stepParams.get("p2").getSource());
+    Assert.assertEquals(ParamSource.SYSTEM_DEFAULT, stepParams.get("p3").getSource());
+  }
+
+  @Test
+  public void testInjectedJobTemplateParamsOverride() {
+    when(stepRuntime.injectRuntimeParams(any(), any()))
+        .thenReturn(singletonMap("p3", ParamDefinition.buildParamDefinition("p3", "d2")));
+    when(defaultParamManager.getDefaultParamsForType(any()))
+        .thenReturn(
+            Optional.of(singletonMap("p3", ParamDefinition.buildParamDefinition("p3", "d3"))));
+
+    Map<String, Parameter> stepParams =
+        paramsManager.generateMergedStepParams(workflowSummary, step, stepRuntime, runtimeSummary);
+
+    Assert.assertTrue(stepParams.containsKey("p3"));
+    Assert.assertEquals("d2", stepParams.get("p3").asStringParam().getValue());
+    Assert.assertEquals(ParamSource.TEMPLATE_SCHEMA, stepParams.get("p3").getSource());
+  }
+
+  @Test
+  public void testInjectedJobTemplateParamsOverridden() {
+    when(stepRuntime.injectRuntimeParams(any(), any()))
+        .thenReturn(singletonMap("p3", ParamDefinition.buildParamDefinition("p3", "d2")));
+    ((TypedStep) step)
+        .setParams(singletonMap("p3", ParamDefinition.buildParamDefinition("p3", "d1")));
+
+    Map<String, Parameter> stepParams =
+        paramsManager.generateMergedStepParams(workflowSummary, step, stepRuntime, runtimeSummary);
+
+    Assert.assertTrue(stepParams.containsKey("p3"));
+    Assert.assertEquals("d1", stepParams.get("p3").asStringParam().getValue());
+    Assert.assertEquals(ParamSource.DEFINITION, stepParams.get("p3").getSource());
+  }
+
+  @Test
   public void testWorkflowParamSanity() {
     Map<String, ParamDefinition> params = new LinkedHashMap<>();
     RunRequest request =
@@ -287,10 +332,15 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         singletonMap("p1", ParamDefinition.buildParamDefinition("p1", "d1"));
 
     ParamSource[] expectedSources =
-        new ParamSource[] {ParamSource.FOREACH, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE};
+        new ParamSource[] {
+          ParamSource.FOREACH, ParamSource.WHILE, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE
+        };
     Initiator.Type[] initiators =
         new Initiator.Type[] {
-          Initiator.Type.FOREACH, Initiator.Type.SUBWORKFLOW, Initiator.Type.TEMPLATE
+          Initiator.Type.FOREACH,
+          Initiator.Type.WHILE,
+          Initiator.Type.SUBWORKFLOW,
+          Initiator.Type.TEMPLATE
         };
     for (int i = 0; i < initiators.length; i++) {
       RunRequest request =
@@ -325,10 +375,15 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
     when(defaultParamManager.getDefaultWorkflowParams()).thenReturn(defaultParams);
 
     ParamSource[] expectedSources =
-        new ParamSource[] {ParamSource.FOREACH, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE};
+        new ParamSource[] {
+          ParamSource.FOREACH, ParamSource.WHILE, ParamSource.SUBWORKFLOW, ParamSource.TEMPLATE
+        };
     Initiator.Type[] initiators =
         new Initiator.Type[] {
-          Initiator.Type.FOREACH, Initiator.Type.SUBWORKFLOW, Initiator.Type.TEMPLATE
+          Initiator.Type.FOREACH,
+          Initiator.Type.WHILE,
+          Initiator.Type.SUBWORKFLOW,
+          Initiator.Type.TEMPLATE
         };
     for (int i = 0; i < initiators.length; i++) {
       RunRequest request =
@@ -377,7 +432,10 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
 
     Initiator.Type[] initiators =
         new Initiator.Type[] {
-          Initiator.Type.FOREACH, Initiator.Type.SUBWORKFLOW, Initiator.Type.TEMPLATE
+          Initiator.Type.FOREACH,
+          Initiator.Type.WHILE,
+          Initiator.Type.SUBWORKFLOW,
+          Initiator.Type.TEMPLATE
         };
     for (Initiator.Type initiator : initiators) {
       RunRequest request =
@@ -467,13 +525,13 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
 
   @Test
   public void testGetSignalParamsEmpty() {
-    Assert.assertTrue(ParamsManager.getStepDependenciesParameters(null).isEmpty());
-    Assert.assertTrue(ParamsManager.getStepOutputsParameters(null).isEmpty());
+    Assert.assertTrue(ParamsManager.getSignalDependenciesParameters(null).isEmpty());
+    Assert.assertTrue(ParamsManager.getSignalOutputsParameters(null).isEmpty());
   }
 
   @Test
   public void testCalculateTimezonesNoTriggers() throws IOException {
-    DefaultParamManager defaultsManager = new DefaultParamManager(yamlMapper);
+    DefaultParamManager defaultsManager = new DefaultParamManager(YAML_MAPPER);
     defaultsManager.init();
     paramsManager = new ParamsManager(defaultsManager);
     Step step = Mockito.mock(Step.class);
@@ -490,9 +548,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         paramsManager.generateMergedWorkflowParams(workflowInstance, request);
 
     paramExtensionRepo.reset(
-        Collections.emptyMap(),
-        Collections.emptyMap(),
-        InstanceWrapper.from(workflowInstance, request));
+        Collections.emptyMap(), null, InstanceWrapper.from(workflowInstance, request));
     paramEvaluator.evaluateWorkflowParameters(workflowParams, workflow.getId());
     paramExtensionRepo.clear();
 
@@ -525,9 +581,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         paramsManager.generateMergedWorkflowParams(workflowInstance, request);
 
     paramExtensionRepo.reset(
-        Collections.emptyMap(),
-        Collections.emptyMap(),
-        InstanceWrapper.from(workflowInstance, request));
+        Collections.emptyMap(), null, InstanceWrapper.from(workflowInstance, request));
     paramEvaluator.evaluateWorkflowParameters(workflowParams, workflow.getId());
     paramExtensionRepo.clear();
 
@@ -561,9 +615,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         paramsManager.generateMergedWorkflowParams(workflowInstance, request);
 
     paramExtensionRepo.reset(
-        Collections.emptyMap(),
-        Collections.emptyMap(),
-        InstanceWrapper.from(workflowInstance, request));
+        Collections.emptyMap(), null, InstanceWrapper.from(workflowInstance, request));
     paramEvaluator.evaluateWorkflowParameters(workflowParams, workflow.getId());
     paramExtensionRepo.clear();
 
@@ -829,8 +881,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
    */
   @Test
   public void testRestartForeachStepRunParamMerge() throws IOException {
-    DefaultParamManager defaultParamManager =
-        new DefaultParamManager(JsonHelper.objectMapperWithYaml());
+    DefaultParamManager defaultParamManager = new DefaultParamManager(YAML_MAPPER);
     defaultParamManager.init();
     ParamsManager paramsManager = new ParamsManager(defaultParamManager);
     Map<String, ParamDefinition> loopParamsDef = new HashMap<>();
@@ -881,8 +932,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
    */
   @Test
   public void testRestartSubworkflowStepRunParamMerge() throws IOException {
-    DefaultParamManager defaultParamManager =
-        new DefaultParamManager(JsonHelper.objectMapperWithYaml());
+    DefaultParamManager defaultParamManager = new DefaultParamManager(YAML_MAPPER);
     defaultParamManager.init();
     ParamsManager paramsManager = new ParamsManager(defaultParamManager);
     for (String paramName : new String[] {"subworkflow_id", "subworkflow_version"}) {
@@ -989,9 +1039,7 @@ public class ParamsManagerTest extends MaestroEngineBaseTest {
         paramsManager.generateMergedWorkflowParams(workflowInstance, request);
 
     paramExtensionRepo.reset(
-        Collections.emptyMap(),
-        Collections.emptyMap(),
-        InstanceWrapper.from(workflowInstance, request));
+        Collections.emptyMap(), null, InstanceWrapper.from(workflowInstance, request));
     paramEvaluator.evaluateWorkflowParameters(workflowParams, workflow.getId());
     paramExtensionRepo.clear();
 

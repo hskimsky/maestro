@@ -17,8 +17,6 @@ import com.netflix.maestro.engine.dao.MaestroWorkflowDao;
 import com.netflix.maestro.engine.dao.MaestroWorkflowInstanceDao;
 import com.netflix.maestro.engine.execution.RunRequest;
 import com.netflix.maestro.engine.execution.RunResponse;
-import com.netflix.maestro.engine.jobevents.WorkflowVersionUpdateJobEvent;
-import com.netflix.maestro.engine.utils.ObjectHelper;
 import com.netflix.maestro.engine.utils.WorkflowHelper;
 import com.netflix.maestro.engine.validations.DryRunValidator;
 import com.netflix.maestro.exceptions.MaestroBadRequestException;
@@ -30,6 +28,7 @@ import com.netflix.maestro.models.Constants;
 import com.netflix.maestro.models.api.WorkflowActionResponse;
 import com.netflix.maestro.models.api.WorkflowCreateRequest;
 import com.netflix.maestro.models.artifact.ForeachArtifact;
+import com.netflix.maestro.models.artifact.WhileArtifact;
 import com.netflix.maestro.models.definition.RunStrategy;
 import com.netflix.maestro.models.definition.User;
 import com.netflix.maestro.models.definition.Workflow;
@@ -44,8 +43,12 @@ import com.netflix.maestro.models.instance.RunProperties;
 import com.netflix.maestro.models.instance.WorkflowInstance;
 import com.netflix.maestro.models.timeline.TimelineActionEvent;
 import com.netflix.maestro.models.timeline.TimelineEvent;
+import com.netflix.maestro.queue.jobevents.WorkflowVersionUpdateJobEvent;
 import com.netflix.maestro.utils.Checks;
+import com.netflix.maestro.utils.IdHelper;
 import com.netflix.maestro.utils.MapHelper;
+import com.netflix.maestro.utils.ObjectHelper;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -53,7 +56,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
-import javax.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -178,13 +180,57 @@ public class WorkflowActionHandler {
   }
 
   /**
+   * Run a while loop inline workflow instance. Additionally, the instance id and run id have
+   * already been decided to avoid race condition and ensure idempotency. It will bypass run
+   * strategy manager as while step manages its own inline workflow instances.
+   *
+   * @param workflow workflow definition
+   * @param internalId workflow internal id
+   * @param workflowVersionId workflow version id
+   * @param runProperties run properties
+   * @param whileStepId while step id
+   * @param artifact while step artifact
+   * @param runRequest run request
+   * @param instanceId instance id
+   * @return the details of run while loop inline workflow instance.
+   */
+  public Optional<Details> runInlineWorkflowInstance(
+      Workflow workflow,
+      Long internalId,
+      long workflowVersionId,
+      RunProperties runProperties,
+      String whileStepId,
+      WhileArtifact artifact,
+      RunRequest runRequest,
+      long instanceId) {
+    WorkflowInstance instance;
+    if (artifact.isFreshRun() || instanceId > artifact.getFirstIteration()) {
+      if (!artifact.isFreshRun()) { // reset to fresh run for new iteration
+        runRequest.clearRestartFor(RunPolicy.RESTART_FROM_BEGINNING);
+      }
+      instance =
+          workflowHelper.createWorkflowInstance(
+              workflow, internalId, workflowVersionId, runProperties, runRequest);
+    } else {
+      // for while loop restart, only the first iteration will be restarted
+      instance =
+          instanceDao.getWorkflowInstanceRun(
+              workflow.getId(), instanceId, artifact.getLoopRunId() - 1);
+      runRequest.updateForDownstreamIfNeeded(whileStepId, instance);
+      workflowHelper.updateWorkflowInstance(instance, runRequest);
+    }
+    instance.setWorkflowInstanceId(instanceId);
+    instance.setWorkflowRunId(artifact.getLoopRunId());
+    return instanceDao.runWorkflowInstances(workflow.getId(), List.of(instance));
+  }
+
+  /**
    * Run a batch of foreach workflow instances for a given workflow and version. The request list
    * has already been sized by insertBatchLimit in StepRuntimeProperties.Foreach. Note that batch
    * start only supports a fresh new run (run_id=1). Additionally, the instance ids have already
    * been decided to avoid race condition and ensure idempotency. It will bypass run strategy
    * manager as foreach manages its own inline workflow instances.
    *
-   * @param batchSize the batch size for run job instance uuids within a run job event.
    * @return the status of start foreach workflow instances.
    */
   public Optional<Details> runForeachBatch(
@@ -195,8 +241,7 @@ public class WorkflowActionHandler {
       String foreachStepId,
       ForeachArtifact artifact,
       List<RunRequest> requests,
-      List<Long> instanceIds,
-      int batchSize) {
+      List<Long> instanceIds) {
     if (ObjectHelper.isCollectionEmptyOrNull(requests)) {
       return Optional.empty();
     }
@@ -231,7 +276,7 @@ public class WorkflowActionHandler {
     if (ObjectHelper.isCollectionEmptyOrNull(instances)) {
       return Optional.empty();
     }
-    return instanceDao.runWorkflowInstances(workflow.getId(), instances, batchSize);
+    return instanceDao.runWorkflowInstances(workflow.getId(), instances);
   }
 
   private List<WorkflowInstance> createStartForeachInstances(
@@ -306,7 +351,7 @@ public class WorkflowActionHandler {
     workflowHelper.updateWorkflowInstance(instance, request);
     instance.setWorkflowRunId(restartRunId);
     return instanceDao.runWorkflowInstances(
-        instance.getWorkflowId(), Collections.singletonList(instance), 1);
+        instance.getWorkflowId(), Collections.singletonList(instance));
   }
 
   private boolean isRestartFromInlineRootMode(RunRequest request, Workflow workflow) {
@@ -314,7 +359,7 @@ public class WorkflowActionHandler {
         && request.getRestartConfig() != null
         && request.getRestartConfig().getRestartPath() != null
         && request.getRestartConfig().getRestartPath().size() == 1
-        && request.getRestartConfig().getRestartPath().get(0).getStepId() == null
+        && request.getRestartConfig().getRestartPath().getFirst().getStepId() == null
         && !MapHelper.isEmptyOrNull(request.getRestartConfig().getStepRestartParams())) {
       UpstreamInitiator.Info info =
           ((ForeachInitiator) request.getInitiator()).getNonInlineParent();
@@ -468,20 +513,25 @@ public class WorkflowActionHandler {
   /**
    * Unblock the failed workflow instances with a provided workflow id.
    *
+   * <p>todo: this might not work well if there are millions of failed instances. If needed, we
+   * should rewrite it to keep a column in maestro_workflow to track it than updating the status of
+   * each failed instance.
+   *
    * @param workflowId workflow id
    */
   public TimelineEvent unblock(String workflowId, User caller) {
     TimelineActionEvent.TimelineActionEventBuilder eventBuilder =
-        TimelineActionEvent.builder().author(caller).reason("Unblock workflow [%s]", workflowId);
-    int totalUnblocked = 0;
-    int unblocked = Constants.UNBLOCK_BATCH_SIZE;
-    while (unblocked == Constants.UNBLOCK_BATCH_SIZE) {
-      unblocked =
-          instanceDao.tryUnblockFailedWorkflowInstances(
-              workflowId, Constants.UNBLOCK_BATCH_SIZE, eventBuilder.build());
-      totalUnblocked += unblocked;
+        TimelineActionEvent.builder()
+            .action(Actions.WorkflowAction.UNBLOCK)
+            .message("Unblocked the workflow.")
+            .author(caller)
+            .reason("Unblock workflow [%s]", workflowId);
+    if (IdHelper.isInlineWorkflowId(workflowId)) {
+      return eventBuilder.build();
     }
-    workflowHelper.publishStartWorkflowEvent(workflowId, totalUnblocked > 0);
+    int totalUnblocked =
+        instanceDao.tryUnblockFailedWorkflowInstances(
+            workflowId, Constants.UNBLOCK_BATCH_SIZE, eventBuilder.build());
     return eventBuilder
         .message("Unblocked [%s] failed workflow instances.", totalUnblocked)
         .build();
